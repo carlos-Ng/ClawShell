@@ -1,0 +1,19 @@
+# ClawShell daemon 配置文件（Windows 版本 - 开发快速启动）
+# 运行方式：cd /path/to/ClawShell && .\build\Debug\crew_shell_service.exe -f
+# 注意：socket_path 使用 Windows Named Pipe 格式，无需事先创建文件
+
+[daemon]
+# IPC Named Pipe 路径（Windows 格式，客户端使用 \\.\pipe\crew-shell-service 连接）
+socket_path      = "\\\\.\\pipe\\crew-shell-service"
+
+thread_pool_size = 4
+log_level        = "debug"
+
+# DLL 所在目录，从构建目录直接运行时对应 build/src/capability/ax/
+# capability_ax.dll 由 CMake 输出到该目录
+module_dir = "build\\src"
+
+# ── 能力模块 ─────────────────────────────────────────────────────────────────
+
+[[modules]]
+name = "capability_ax"

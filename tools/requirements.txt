@@ -1,0 +1,14 @@
+# ClawShell Python tools 依赖（Windows 版本）
+#
+# 安装：pip install -r tools\requirements.txt
+#
+# mcp_server.py 需要 mcp 包；
+# ax_test_client.py / confirm_client.py 需要 pywin32（Windows Named Pipe 访问）；
+# mcp_client.py 仅使用 Python 标准库 + pywin32。
+
+# MCP SDK（mcp_server.py 使用）
+mcp>=1.0.0
+
+# Windows Named Pipe 支持（所有 tools/ 脚本均需要）
+# 安装后需运行：python -m pywin32_postinstall -install
+pywin32>=306

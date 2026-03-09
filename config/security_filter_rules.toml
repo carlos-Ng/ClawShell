@@ -1,0 +1,64 @@
+# security_filter 模块规则配置
+#
+# 规则匹配逻辑（preHook）：
+#   1. 依次匹配 [[deny]] 规则，命中任意一条 → SecurityAction::Deny
+#   2. 依次匹配 [[confirm]] 规则，命中任意一条 → SecurityAction::NeedConfirm
+#   3. 未命中任何规则 → SecurityAction::Pass
+#
+# 字段说明：
+#   capability      - 目标能力名称，"*" 或省略 = 匹配所有能力
+#   operations      - 操作名称列表，省略 = 匹配该能力的所有操作
+#   reason          - 触发规则时向用户展示的原因
+#   params_field    - （可选）要检查的 params 字段名称
+#   params_patterns - （可选）ECMAScript 正则表达式列表，任意一条命中则触发规则
+#                     若不填 params_field / params_patterns，则对所有调用参数无条件触发
+
+# ── 拒绝规则 ─────────────────────────────────────────────────────────────────
+#
+# key_combo 规则已细化为仅拒绝高危系统级组合键，无害组合键（如 Ctrl+C/Z/V）
+# 改由 [[confirm]] 规则要求用户确认（见下方 confirm 区块）。
+#
+# 高危标准：可绕过 UI、触发系统权限提升、调出命令行、锁屏/关机等系统行为。
+
+[[deny]]
+capability      = "capability_ax"
+operations      = ["key_combo"]
+params_field    = "keys"
+params_patterns = ["Win", "Cmd", "Command"]
+reason          = "Win/Cmd key combos can trigger system-level actions (Run dialog, Start menu, system shortcuts) and are blocked by security policy"
+
+[[deny]]
+capability      = "capability_ax"
+operations      = ["key_combo"]
+params_field    = "keys"
+params_patterns = ["F4"]
+reason          = "Alt+F4 and similar F4 combos can close applications unexpectedly and are blocked"
+
+# ── 确认规则 ─────────────────────────────────────────────────────────────────
+
+[[confirm]]
+capability = "capability_ax"
+operations = ["click", "double_click", "right_click"]
+reason     = "GUI click operation requires user confirmation"
+
+[[confirm]]
+capability = "capability_ax"
+operations = ["key_press"]
+reason     = "key press requires user confirmation"
+
+[[confirm]]
+capability    = "capability_ax"
+operations    = ["set_value"]
+reason        = "writing sensitive content requires user confirmation"
+params_field    = "value"
+params_patterns = ["pass(word|wd)?", "api[_\\-]?key", "secret", "token", "credential"]
+
+[[confirm]]
+capability = "capability_ax"
+operations = ["set_value"]
+reason     = "text input requires user confirmation"
+
+[[confirm]]
+capability = "capability_ax"
+operations = ["key_combo"]
+reason     = "keyboard shortcut requires user confirmation"

@@ -1,0 +1,31 @@
+# ClawShell daemon 配置文件（Windows 版本）
+# 运行方式：cd /path/to/ClawShell && .\build\Debug\crew_shell_service.exe -f -c config\clawshell.toml
+
+[daemon]
+# IPC Named Pipe 路径（Windows 格式，客户端使用 \\.\pipe\crew-shell-service 连接）
+socket_path      = "\\\\.\\pipe\\crew-shell-service"
+
+thread_pool_size = 4
+log_level        = "debug"
+
+# DLL 所在目录，crew_shell_service 从此目录按 "{name}.dll" 推导路径
+# dist 目标已将所有 DLL 集中到此目录
+module_dir = "dist\\lib"
+
+# 用户确认通道的 Named Pipe 路径
+# confirm_client.py 连接此地址接收并响应确认请求
+confirm_socket_path = "\\\\.\\pipe\\crew-shell-service-confirm"
+
+# ── 能力模块 ─────────────────────────────────────────────────────────────────
+
+[[modules]]
+name = "capability_ax"
+# 可在此处放置 ax 模块专属参数，例如：
+# max_depth = 8
+
+# ── 安全模块 ─────────────────────────────────────────────────────────────────
+
+[[modules]]
+name       = "security_filter"
+priority   = 10
+rules_file = "config\\security_filter_rules.toml"

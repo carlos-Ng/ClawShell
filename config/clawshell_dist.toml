@@ -1,0 +1,22 @@
+# ClawShell daemon 配置文件（dist 目录专用）
+# 运行方式：cd dist && .\bin\crew_shell_service.exe -f -c config\clawshell.toml
+#
+# 注意：此配置的路径相对于 dist 目录，须在 dist 下启动。
+
+[daemon]
+socket_path      = "\\\\.\\pipe\\crew-shell-service"
+thread_pool_size = 4
+log_level        = "debug"
+
+# 相对于 dist 目录：dist/lib/
+module_dir = "lib"
+
+confirm_socket_path = "\\\\.\\pipe\\crew-shell-service-confirm"
+
+[[modules]]
+name = "capability_ax"
+
+[[modules]]
+name       = "security_filter"
+priority   = 10
+rules_file = "config\\security_filter_rules.toml"
