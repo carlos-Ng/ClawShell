@@ -78,10 +78,10 @@ target_link_libraries(clawshell_headers INTERFACE third_party)
 # ─── Core library ────────────────────────────────────────────────────────────
 
 add_library(clawshell_core STATIC
-    src/core/module_config.cc
-    src/core/security_chain.cc
-    src/core/module_manager.cc
-    src/core/capability_service.cc
+    daemon-service/core/module_config.cc
+    daemon-service/core/security_chain.cc
+    daemon-service/core/module_manager.cc
+    daemon-service/core/capability_service.cc
 )
 target_link_libraries(clawshell_core PUBLIC clawshell_headers)
 
@@ -90,44 +90,44 @@ target_link_libraries(clawshell_core PUBLIC clawshell_headers)
 # 平台相关的 IPC 实现由 if(WIN32)/if(APPLE) 分支选择，对应同一套 IpcServerInterface 抽象。
 
 add_library(clawshell_ipc STATIC
-    src/ipc/frame.cc
-    src/ipc/json_rpc_status_converter.cc
+    daemon-service/ipc/frame.cc
+    daemon-service/ipc/json_rpc_status_converter.cc
 )
 
 if(WIN32)
     target_sources(clawshell_ipc PRIVATE
-        src/ipc/windows_ipc_server.cc
-        src/ipc/windows_ipc_client.cc
+        daemon-service/ipc/windows_ipc_server.cc
+        daemon-service/ipc/windows_ipc_client.cc
     )
 # if(APPLE) 分支：未来合并 macOS 代码时在此添加 unix_ipc_server.cc / unix_ipc_client.cc
 endif()
 
-target_include_directories(clawshell_ipc PRIVATE ${CMAKE_SOURCE_DIR}/src/ipc)
+target_include_directories(clawshell_ipc PRIVATE ${CMAKE_SOURCE_DIR}/daemon-service/ipc)
 target_link_libraries(clawshell_ipc PUBLIC clawshell_headers)
 
 # ─── Capability modules ───────────────────────────────────────────────────────
 
-add_subdirectory(src/capability/ax)
+add_subdirectory(daemon-service/capability/ax)
 
 # ─── Security modules ─────────────────────────────────────────────────────────
 
 add_library(security_filter SHARED
-    src/security/filter/security_filter.cc
+    daemon-service/security/filter/security_filter.cc
 )
 target_include_directories(security_filter PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/security/filter
+    ${CMAKE_SOURCE_DIR}/daemon-service/security/filter
 )
 target_link_libraries(security_filter PRIVATE clawshell_core clawshell_headers)
 
 # ─── Daemon executable ───────────────────────────────────────────────────────
 
 add_executable(crew_shell_service
-    src/daemon/main.cc
-    src/daemon/daemon.cc
+    daemon-service/daemon/main.cc
+    daemon-service/daemon/daemon.cc
 )
 target_include_directories(crew_shell_service PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/daemon
-    ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/daemon-service/daemon
+    ${CMAKE_SOURCE_DIR}/daemon-service
 )
 target_link_libraries(crew_shell_service PRIVATE
     clawshell_core

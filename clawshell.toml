@@ -9,9 +9,9 @@ socket_path      = "\\\\.\\pipe\\crew-shell-service"
 thread_pool_size = 4
 log_level        = "debug"
 
-# DLL 所在目录，从构建目录直接运行时对应 build/src/capability/ax/
+# DLL 所在目录，从构建目录直接运行时对应 build/daemon-service/
 # capability_ax.dll 由 CMake 输出到该目录
-module_dir = "build\\src"
+module_dir = "build\\daemon-service"
 
 # ── 能力模块 ─────────────────────────────────────────────────────────────────
 
