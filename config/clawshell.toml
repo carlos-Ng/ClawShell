@@ -12,9 +12,17 @@ log_level        = "debug"
 # dist 目标已将所有 DLL 集中到此目录
 module_dir = "dist\\lib"
 
-# 用户确认通道的 Named Pipe 路径
-# confirm_client.py 连接此地址接收并响应确认请求
-confirm_socket_path = "\\\\.\\pipe\\crew-shell-service-confirm"
+# ── UIService (Channel 2) ────────────────────────────────────────────────────
+
+[ui]
+# ClawShell WinForms UI 连接的 Named Pipe 路径
+pipe_path    = "\\\\.\\pipe\\crew-shell-service-ui"
+
+# 用户无响应时的超时策略：wait_forever / timeout_deny / timeout_allow
+timeout_mode = "timeout_deny"
+
+# 超时时长（秒），timeout_mode = wait_forever 时忽略
+timeout_secs = 60
 
 # ── 能力模块 ─────────────────────────────────────────────────────────────────
 

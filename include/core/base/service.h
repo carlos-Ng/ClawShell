@@ -1,6 +1,5 @@
-﻿#pragma once
+#pragma once
 
-#include "core/base/confirm.h"
 #include "core/base/core_config.h"
 #include "common/error.h"
 
@@ -11,7 +10,18 @@
 #include <vector>
 
 namespace clawshell {
+namespace ipc {
+// 前向声明：UIService 定义在 ipc/ui_service.h，此处仅需指针参数，避免 core→ipc 头文件依赖。
+class UIService;
+} // namespace ipc
+} // namespace clawshell
+
+namespace clawshell {
 namespace core {
+
+// 前向声明：避免 service.h 直接引入 task_registry.h 形成循环依赖风险，
+// 同时允许 setTaskRegistry 接受指针参数。
+class TaskRegistry;
 
 // CapabilityService 是 core 对外暴露的唯一入口，daemon 通过它访问所有能力。
 //
@@ -20,17 +30,10 @@ namespace core {
 //                 release 时逆序 Shutdown 所有模块。
 // - 统一调用入口：callCapability 将请求透明地经过 SecurityChain 审查后，
 //                 路由到对应的 CapabilityInterface 执行。
+// - 任务上下文装配：通过注入的 TaskRegistry 根据 task_id 查找 TaskContext，
+//                   填入 SecurityContext.task，使安全模块可感知任务级状态。
 // - 确认通道管理：SecurityAction::NeedConfirm 时的用户确认流程由内部处理，
 //                 daemon 不感知此细节。
-//
-// 使用示例：
-//   CapabilityService service;
-//   service.init(core_config);
-//   for (const auto& name : service.capabilityNames()) {
-//       ipc_server.registerModule(name, handler);
-//   }
-//   auto result = service.callCapability("capability_ax", "list_windows", {});
-//   service.release();
 class CapabilityService
 {
 public:
@@ -43,65 +46,64 @@ public:
 	// init 初始化 core 运行时。
 	//
 	// 内部流程：
-	//   1. 遍历 config.modules，通过 ModuleManager 动态加载（dlopen/dlsym）各模块。
+	//   1. 遍历 config.modules，通过 ModuleManager 动态加载各模块。
 	//   2. 调用各模块的 init(spec.params) 完成初始化。
 	//   3. 按 spec.priority 将安全模块注册进 SecurityChain。
 	//
 	// 入参:
-	// - config: 由 daemon 解析 TOML 后构造的 CoreConfig，包含 module_dir 与模块列表。
+	// - config: CoreConfig，由 daemon 解析 TOML 后构造。
 	//
 	// 出参/返回:
 	// - Result::Ok()：初始化成功。
-	// - Result::Error(status)：初始化失败，status 描述原因（模块加载失败等）。
+	// - Result::Error(status)：初始化失败。
 	Result<void> init(const CoreConfig& config);
 
 	// release 关闭 core 运行时，逆序 Shutdown 所有模块。
-	//
-	// 调用后 CapabilityService 不可再使用，再次使用前须重新调用 init。
 	void release();
 
-	// setConfirmHandler 注入用户确认通道实现。
+	// setTaskRegistry 注入 TaskRegistry，供 callCapability 装配 SecurityContext.task。
 	//
-	// 须在 init 之前或之后调用均可；未注入时 NeedConfirm 直接返回 CONFIRM_REQUIRED 错误。
-	// handler 的生命周期须长于 CapabilityService 实例。
+	// 未注入时 SecurityContext.task = nullptr，安全模块自动降级为无任务上下文模式。
+	// registry 的生命周期须长于 CapabilityService 实例。
 	//
 	// 入参:
-	// - handler: 确认通道实现，不可为 nullptr（如需清除请传专门的 NullConfirmHandler）。
-	void setConfirmHandler(ConfirmHandlerInterface* handler);
+	// - registry: TaskRegistry 指针，可为 nullptr（相当于卸载）。
+	void setTaskRegistry(TaskRegistry* registry);
 
-	// capabilityNames 返回已加载的所有能力模块名称列表。
+	// setUIService 注入 UIService，供 callCapability 推送 op_log 与处理 NeedConfirm 确认。
 	//
-	// 须在 init 成功后调用。daemon 使用此列表向 IpcServer 注册 ModuleHandler，
-	// 使 IPC 路由与 CapabilityService 中的能力模块保持一致。
+	// 未注入时 NeedConfirm 降级为旧版 ConfirmHandlerInterface；两者均未注入则返回
+	// CONFIRM_REQUIRED 错误。ui_service 的生命周期须长于 CapabilityService 实例。
 	//
-	// 出参/返回:
-	// - 已加载能力模块的名称列表（与 ModuleInterface::name() 返回值一致）。
+	// 入参:
+	// - ui_service: UIService 指针，可为 nullptr（相当于卸载）。
+	void setUIService(ipc::UIService* ui_service);
+
+	// capabilityNames 返回已加载的所有能力模块名称列表（须在 init 成功后调用）。
 	std::vector<std::string> capabilityNames() const;
 
 	// callCapability 是 daemon 调用能力的统一入口。
 	//
 	// 内部流程：
-	//   1. 构造 SecurityContext（含 capability_name、operation、params）。
-	//   2. SecurityChain::runPreHook —— 入站审查。
-	//      - Deny        → 返回 Error(OPERATION_DENIED)。
-	//      - NeedConfirm → Phase 1 暂返回 Error(CONFIRM_REQUIRED)。
-	//      - Pass        → 继续。
-	//   3. ModuleManager 根据 capability_name 路由到对应 CapabilityInterface。
-	//   4. CapabilityInterface::execute(operation, params)。
-	//   5. SecurityChain::runPostHook —— 出站过滤（含脱敏）。
-	//   6. 返回处理后的结果。
+	//   1. 若注入了 TaskRegistry，通过 task_id 查找 TaskContext 并装配进 SecurityContext。
+	//   2. SecurityChain::runPreHook —— 入站审查（Pass / NeedConfirm / Deny）。
+	//   3. NeedConfirm → 通过 ConfirmHandler 阻塞等待用户确认。
+	//   4. 路由到对应 CapabilityInterface::execute(operation, params)。
+	//   5. SecurityChain::runPostHook —— 出站过滤。
 	//
 	// 入参:
 	// - capability_name: 目标能力标识，例如 "capability_ax"。
 	// - operation:       操作名称，例如 "list_windows"。
-	// - params:          操作参数（JSON 对象），无参数时传空对象 {}。
+	// - params:          操作参数 JSON 对象，无参数时传 {} 空对象。
+	// - task_id:         当前操作所属任务 ID，空字符串表示无关联任务。
 	//
 	// 出参/返回:
 	// - Result::Ok(json)：操作成功，json 为返回数据。
-	// - Result::Error(status)：操作失败或被拒绝，status.code 指明原因。
-	Result<nlohmann::json> callCapability(std::string_view capability_name,
-	                                      std::string_view operation,
-	                                      const nlohmann::json& params);
+	// - Result::Error(status)：操作失败或被安全策略拒绝。
+	Result<nlohmann::json> callCapability(std::string_view      capability_name,
+	                                      std::string_view      operation,
+	                                      const nlohmann::json& params,
+	                                      const std::string&    task_id = "");
 
 private:
 	struct Implement;

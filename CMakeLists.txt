@@ -82,16 +82,17 @@ add_library(clawshell_core STATIC
     daemon-service/core/security_chain.cc
     daemon-service/core/module_manager.cc
     daemon-service/core/capability_service.cc
+    daemon-service/core/task_registry.cc
 )
 target_link_libraries(clawshell_core PUBLIC clawshell_headers)
 
 # ─── IPC library ─────────────────────────────────────────────────────────────
-# 平台无关部分（帧编解码、JSON-RPC 状态转换）始终编译。
+# 平台无关部分（帧编解码）始终编译。
 # 平台相关的 IPC 实现由 if(WIN32)/if(APPLE) 分支选择，对应同一套 IpcServerInterface 抽象。
 
 add_library(clawshell_ipc STATIC
     daemon-service/ipc/frame.cc
-    daemon-service/ipc/json_rpc_status_converter.cc
+    daemon-service/ipc/ui_service.cc
 )
 
 if(WIN32)

@@ -11,7 +11,12 @@ log_level        = "debug"
 # 相对于 dist 目录：dist/lib/
 module_dir = "lib"
 
-confirm_socket_path = "\\\\.\\pipe\\crew-shell-service-confirm"
+# ── UIService (Channel 2) ────────────────────────────────────────────────────
+
+[ui]
+pipe_path    = "\\\\.\\pipe\\crew-shell-service-ui"
+timeout_mode = "timeout_deny"
+timeout_secs = 60
 
 [[modules]]
 name = "capability_ax"

@@ -13,6 +13,13 @@ log_level        = "debug"
 # capability_ax.dll 由 CMake 输出到该目录
 module_dir = "build\\daemon-service"
 
+# ── UIService (Channel 2) ────────────────────────────────────────────────────
+
+[ui]
+pipe_path    = "\\\\.\\pipe\\crew-shell-service-ui"
+timeout_mode = "timeout_deny"
+timeout_secs = 60
+
 # ── 能力模块 ─────────────────────────────────────────────────────────────────
 
 [[modules]]

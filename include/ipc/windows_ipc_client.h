@@ -7,10 +7,10 @@
 namespace clawshell {
 namespace ipc {
 
-// WindowsIpcClient 是基于 Windows Named Pipe 的 IpcClientInterface 实现。
-// 对应 macOS 平台的 UnixIpcClient（Unix Domain Socket），由 CMakeLists.txt
-// 按平台选择编译，共同实现 IpcClientInterface 抽象接口。
-// 使用 Length-prefix 帧格式（[uint32 len][JSON body]）传输 JSON-RPC 2.0 消息。
+// WindowsIpcClient 是 IpcClientInterface 的 Windows Named Pipe 实现。
+// 使用 Length-prefix 帧格式（[uint32 BE len][JSON body]）传输 Channel 1 消息。
+//
+// 线程安全：call_mutex_ 序列化并发调用，保证单连接上同一时刻只有一条消息在发送。
 class WindowsIpcClient : public IpcClientInterface
 {
 public:
@@ -22,8 +22,18 @@ public:
 
 	Status connect(std::string_view pipe_path) override;
 	void disconnect() override;
-	Result<nlohmann::json> call(std::string_view method,
-	                            const nlohmann::json& params) override;
+
+	Result<std::string>    beginTask(const std::string& description,
+	                                 const std::string& root_description,
+	                                 const std::string& parent_task_id,
+	                                 const std::string& session_id) override;
+
+	Status endTask(const std::string& task_id, bool success) override;
+
+	Result<nlohmann::json> callCapability(const std::string&    task_id,
+	                                      const std::string&    capability,
+	                                      const std::string&    operation,
+	                                      const nlohmann::json& params) override;
 
 private:
 	struct Implement;

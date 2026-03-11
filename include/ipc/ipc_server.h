@@ -10,38 +10,98 @@
 namespace clawshell {
 namespace ipc {
 
-// ModuleHandler 是模块请求处理函数类型。
-// 接收 operation（操作名）和 params（JSON 参数对象），返回 Result<json>。
-using ModuleHandler = std::function<Result<nlohmann::json>(
-	const std::string& operation,
+// ─────────────────────────────────────────────────────────────────────────────
+// Channel 1 处理器类型定义
+//
+// Channel 1 协议使用 type-based 消息帧（非 JSON-RPC 2.0）：
+//   beginTask        (VM → Daemon) — 任务开始，Daemon 分配 task_id
+//   endTask          (VM → Daemon) — 任务结束，无需响应（通知语义）
+//   capability       (VM → Daemon) — 能力调用，携带 task_id
+//   capability_result(Daemon → VM) — 能力调用响应
+// ─────────────────────────────────────────────────────────────────────────────
+
+// CapabilityHandler：能力调用处理器。
+//
+// 入参：
+// - task_id:   发起本次调用的任务 ID（来自 capability 消息的 task_id 字段）。
+//              空字符串表示无关联任务（向后兼容）。
+// - operation: 操作名称，例如 "list_windows"。
+// - params:    调用参数 JSON 对象。
+//
+// 返回：
+// - Result::Ok(json) — 操作成功，包含结果数据。
+// - Result::Error(status) — 操作失败，status 描述原因。
+using CapabilityHandler = std::function<Result<nlohmann::json>(
+	const std::string&    task_id,
+	const std::string&    operation,
 	const nlohmann::json& params)>;
 
-// IpcServerInterface 定义本地 IPC 服务端的抽象接口。
+// TaskBeginHandler：任务开始处理器。
 //
-// 职责：
-// - 管理本地 IPC 通道监听与线程池
-//   （Windows: Named Pipe；macOS: Unix Domain Socket）；
-// - 解析 JSON-RPC 2.0 协议帧；
-// - 将 "module.operation" 格式的请求路由到对应的 ModuleHandler。
+// 由 Daemon 注册，IpcServer 在收到 beginTask 消息时调用。
+// 返回 Daemon 为本次任务分配的唯一 task_id（如 "task-1"）。
 //
-// 调用约定：registerModule 须在 start 之前完成。
+// 入参：
+// - description:      当前任务意图描述（来自 before_prompt_build hook）。
+// - root_description: 用户原始意图；顶层任务时非空，子任务时传空字符串（自动继承）。
+// - parent_task_id:   父任务 ID，空字符串表示顶层任务。
+// - session_id:       用户会话标识（来自 OpenClaw sessionKey）。
+using TaskBeginHandler = std::function<std::string(
+	const std::string& description,
+	const std::string& root_description,
+	const std::string& parent_task_id,
+	const std::string& session_id)>;
+
+// TaskEndHandler：任务结束通知处理器。
+//
+// 由 Daemon 注册，IpcServer 在收到 endTask 消息时调用（无响应，纯通知语义）。
+//
+// 入参：
+// - task_id: 结束的任务 ID。
+// - success: true = 任务正常完成；false = 任务失败或被中止。
+using TaskEndHandler = std::function<void(
+	const std::string& task_id,
+	bool               success)>;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IpcServerInterface：Channel 1 IPC 服务端抽象接口
+// ─────────────────────────────────────────────────────────────────────────────
 class IpcServerInterface
 {
 public:
 	virtual ~IpcServerInterface() = default;
 
-	// registerModule 注册一个模块的请求处理器。
+	// registerCapability 注册一个能力模块的调用处理器。
+	//
+	// 须在 start() 之前完成注册。
+	// capability_name 对应 capability 消息的 capability 字段。
 	//
 	// 入参:
-	// - module_name: 模块标识，例如 "ax"，对应 JSON-RPC method 前缀。
-	// - handler: 模块处理函数，接收 operation 和 params，返回 Result<json>。
-	virtual void registerModule(std::string_view module_name, ModuleHandler handler) = 0;
+	// - capability_name: 能力标识，例如 "capability_ax"。
+	// - handler:         能力调用处理器（含 task_id）。
+	virtual void registerCapability(std::string_view   capability_name,
+	                                CapabilityHandler  handler) = 0;
 
-	// start 启动服务端，绑定并监听指定的本地 IPC 通道。
+	// setTaskBeginHandler 设置任务开始消息的处理器。
+	//
+	// 须在 start() 之前完成注册。未设置时收到 beginTask 消息返回空 task_id。
 	//
 	// 入参:
-	// - pipe_path: 通道路径
-	//              （Windows: \\.\pipe\<name>；macOS: Unix socket 文件路径）。
+	// - handler: 任务开始处理器，返回分配的 task_id。
+	virtual void setTaskBeginHandler(TaskBeginHandler handler) = 0;
+
+	// setTaskEndHandler 设置任务结束通知的处理器。
+	//
+	// 须在 start() 之前完成注册。未设置时收到 endTask 消息静默忽略。
+	//
+	// 入参:
+	// - handler: 任务结束通知处理器。
+	virtual void setTaskEndHandler(TaskEndHandler handler) = 0;
+
+	// start 启动服务端，绑定并监听指定本地 IPC 通道。
+	//
+	// 入参:
+	// - pipe_path:       通道路径（Windows: \\.\pipe\<name>）。
 	// - thread_pool_size: 工作线程数量，默认 8。
 	//
 	// 出参/返回:

@@ -1,8 +1,8 @@
 #include "ipc/windows_ipc_server.h"
 #include "frame.h"
-#include "json_rpc_status_converter.h"
 
 #include "common/log.h"
+#include "common/status.h"
 
 #include <nlohmann/json.hpp>
 
@@ -24,100 +24,106 @@
 namespace clawshell {
 namespace ipc {
 
+// ─── 协议辅助 ────────────────────────────────────────────────────────────────
+//
+// Channel 1 type-based 消息格式（非 JSON-RPC 2.0）：
+//
+//   beginTask (VM→Daemon):
+//     {"type":"beginTask","description":"...","root_description":"...",
+//      "parent_task_id":"","session_id":"..."}
+//   beginTask_response (Daemon→VM):
+//     {"type":"beginTask_response","task_id":"task-1"}
+//
+//   endTask (VM→Daemon, 无响应):
+//     {"type":"endTask","task_id":"task-1","success":true}
+//
+//   capability (VM→Daemon):
+//     {"type":"capability","id":42,"task_id":"task-1",
+//      "capability":"capability_ax","operation":"list_windows","params":{}}
+//   capability_result (Daemon→VM):
+//     {"type":"capability_result","id":42,"success":true,"result":{...}}
+//     {"type":"capability_result","id":42,"success":false,
+//      "error_code":43,"error_message":"..."}
 
+namespace {
+
+// makeCapabilityResultOk 构造成功的 capability_result 响应帧。
+std::string makeCapabilityResultOk(int id, const nlohmann::json& result)
+{
+	return nlohmann::json{
+		{"type",    "capability_result"},
+		{"id",      id},
+		{"success", true},
+		{"result",  result},
+	}.dump();
+}
+
+// makeCapabilityResultError 构造失败的 capability_result 响应帧。
+std::string makeCapabilityResultError(int                id,
+                                      Status::Code       code,
+                                      const std::string& message)
+{
+	return nlohmann::json{
+		{"type",          "capability_result"},
+		{"id",            id},
+		{"success",       false},
+		{"error_code",    static_cast<int>(code)},
+		{"error_message", message},
+	}.dump();
+}
+
+} // anonymous namespace
 
 // ─── Implement ──────────────────────────────────────────────────────────────
 
 struct WindowsIpcServer::Implement
 {
-	std::unordered_map<std::string, ModuleHandler> handlers_;
-	std::mutex                                     handlers_mutex_;
+	// ── 已注册的处理器 ────────────────────────────────────────────────────────
+	std::unordered_map<std::string, CapabilityHandler> capability_handlers_;
+	std::mutex                                         handlers_mutex_;
 
-	HANDLE            listen_handle_ = INVALID_HANDLE_VALUE;
-	std::string       pipe_name_;
+	TaskBeginHandler begin_task_handler_;
+	TaskEndHandler   end_task_handler_;
+
+	// ── 管道基础设施 ──────────────────────────────────────────────────────────
+	HANDLE      listen_handle_ = INVALID_HANDLE_VALUE;
+	std::string pipe_name_;
 
 	std::atomic<bool> running_{false};
 
 	std::thread              accept_thread_;
 	std::vector<std::thread> workers_;
 
-	std::queue<HANDLE>       work_queue_;
-	std::mutex               queue_mutex_;
-	std::condition_variable  queue_cv_;
+	std::queue<HANDLE>      work_queue_;
+	std::mutex              queue_mutex_;
+	std::condition_variable queue_cv_;
 
-	// current_accept_handle_：acceptLoop 当前正在 ConnectNamedPipe 等待的管道句柄。
-	// stop() 通过此字段调用 CancelIoEx，无论是第几轮迭代都能可靠中断。
-	// 由 current_accept_mutex_ 保护。
-	HANDLE    current_accept_handle_ = INVALID_HANDLE_VALUE;
+	// current_accept_handle_：acceptLoop 当前正在 ConnectNamedPipe 等待的句柄。
+	// stop() 通过此字段调用 CancelIoEx 中断，任意迭代轮次均有效。
+	HANDLE     current_accept_handle_ = INVALID_HANDLE_VALUE;
 	std::mutex current_accept_mutex_;
 
-	// 活跃连接集合：用于 stop() 时 CancelIoEx 正在 processConnection 持有的 HANDLE，
-	// 以中断其阻塞的 readFrame，使 worker 线程能及时退出
+	// 活跃连接集合：stop() 通过 CancelIoEx 中断正在 readFrame 的 worker
 	std::set<HANDLE> active_handles_;
 	std::mutex       active_handles_mutex_;
 
-	JsonRpcStatusConverter converter_;
+	// ── 内部方法 ──────────────────────────────────────────────────────────────
 
-	// ── 内部方法 ────────────────────────────────────────────────────────────
-
-	// bindAndListen 创建 Named Pipe 服务端实例，准备接受连接。
-	//
-	// 入参:
-	// - pipe_name: Named Pipe 路径，格式 \\.\pipe\<name>。
-	//
-	// 出参/返回:
-	// - Status::Ok()：成功。
-	// - Status(error)：创建失败。
 	Status bindAndListen(const std::string& pipe_name);
+	void   acceptLoop();
+	void   workerLoop();
+	void   processConnection(HANDLE handle);
 
-	// acceptLoop 在独立线程中循环接受新连接，将 HANDLE 投入工作队列。
-	void acceptLoop();
+	// handleMessage 解析一条帧数据，按 type 路由到对应处理器，返回响应字符串。
+	// endTask 等通知类消息返回空字符串（无需回写）。
+	std::string handleMessage(const std::string& frame_str);
 
-	// workerLoop 工作线程主循环，从队列取 HANDLE 并处理连接。
-	void workerLoop();
-
-	// processConnection 处理单个连接的完整生命周期（多次请求-响应）。
-	//
-	// 入参:
-	// - handle: 已接受的连接 HANDLE，函数返回时负责关闭。
-	void processConnection(HANDLE handle);
-
-	// handleRequest 解析一条 JSON-RPC 2.0 请求字符串并返回响应字符串。
-	//
-	// 入参:
-	// - request_str: 原始 JSON 字符串。
-	//
-	// 出参/返回:
-	// - 响应 JSON 字符串；通知类请求返回空字符串（无需响应）。
-	std::string handleRequest(const std::string& request_str);
-
-	// dispatchToModule 解析 method 字段并路由到对应模块处理器。
-	//
-	// 入参:
-	// - id:     JSON-RPC request id（用于构造响应）。
-	// - method: 完整方法名，格式为 "module.operation"。
-	// - params: 请求参数 JSON 对象。
-	//
-	// 出参/返回:
-	// - 响应 JSON 字符串。
-	std::string dispatchToModule(const nlohmann::json& id,
-	                             const std::string& method,
-	                             const nlohmann::json& params);
-
-	// makeSuccessResponse 构造 JSON-RPC 2.0 成功响应字符串。
-	static std::string makeSuccessResponse(const nlohmann::json& id,
-	                                       const nlohmann::json& result);
-
-	// makeErrorResponse 构造 JSON-RPC 2.0 错误响应字符串。
-	static std::string makeErrorResponse(const nlohmann::json& id,
-	                                     int code,
-	                                     const std::string& msg);
+	// handleCapability 处理 capability 消息，调用已注册的 CapabilityHandler。
+	std::string handleCapability(const nlohmann::json& msg);
 };
 
 // ─── Implement 方法实现 ──────────────────────────────────────────────────────
 
-// bindAndListen 创建 Named Pipe 服务端实例（第一个实例，用于 accept 循环）。
-// 使用 PipeSecurityContext 限制连接权限为当前用户，防止其他进程或低权限进程接入。
 Status WindowsIpcServer::Implement::bindAndListen(const std::string& pipe_name)
 {
 	pipe_name_ = pipe_name;
@@ -127,15 +133,14 @@ Status WindowsIpcServer::Implement::bindAndListen(const std::string& pipe_name)
 		LOG_WARN("ipc server: failed to build pipe DACL, falling back to default security");
 	}
 
-	// 创建第一个管道实例：后续 acceptLoop 中会为每个连接创建新实例
 	listen_handle_ = ::CreateNamedPipeA(
 	    pipe_name_.c_str(),
 	    PIPE_ACCESS_DUPLEX,
 	    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
 	    PIPE_UNLIMITED_INSTANCES,
 	    65536, 65536,
-	    0,        // nDefaultTimeOut：0 = 50ms 默认
-	    sec.ptr() // 当前用户专属 DACL
+	    0,
+	    sec.ptr()
 	);
 	if (listen_handle_ == INVALID_HANDLE_VALUE) {
 		return Status(Status::IO_ERROR, "failed to create named pipe");
@@ -143,25 +148,13 @@ Status WindowsIpcServer::Implement::bindAndListen(const std::string& pipe_name)
 	return Status::Ok();
 }
 
-// acceptLoop 循环等待客户端连接，将已连接的管道 HANDLE 投入工作队列。
-// 每次连接后立即创建下一个管道实例以等待新客户端，与 POSIX accept 语义对应。
-//
-// 死锁修复：
-//   每次 ConnectNamedPipe 前，将 current 写入 current_accept_handle_（互斥保护），
-//   使 stop() 无论在哪轮迭代都能通过 CancelIoEx 可靠中断阻塞。
-//   原先只对 listen_handle_ 调用 CancelIoEx，在第一次连接后 current != listen_handle_，
-//   CancelIoEx 无效，导致 accept_thread_.join() 永远阻塞。
-//
-// handle 泄漏修复：
-//   用 current_consumed 标记 current 是否已入队。若循环因 running_=false 或错误退出时
-//   current 尚未入队，主动关闭该句柄防止泄漏。
+// acceptLoop 与 WindowsIpcServer 原版相同的 accept 架构（见原版注释）。
 void WindowsIpcServer::Implement::acceptLoop()
 {
 	HANDLE current          = listen_handle_;
-	bool   current_consumed = true; // listen_handle_ 由 stop() 负责关闭，视为"已消费"
+	bool   current_consumed = true;
 
 	while (running_.load()) {
-		// 注册当前等待句柄，使 stop() 可以通过 CancelIoEx 中断本次 ConnectNamedPipe
 		{
 			std::lock_guard<std::mutex> lk(current_accept_mutex_);
 			current_accept_handle_ = current;
@@ -169,7 +162,6 @@ void WindowsIpcServer::Implement::acceptLoop()
 
 		BOOL connected = ::ConnectNamedPipe(current, nullptr);
 
-		// 解注册：ConnectNamedPipe 已返回（无论成功与否），stop() 不再需要 cancel 此 handle
 		{
 			std::lock_guard<std::mutex> lk(current_accept_mutex_);
 			current_accept_handle_ = INVALID_HANDLE_VALUE;
@@ -180,11 +172,9 @@ void WindowsIpcServer::Implement::acceptLoop()
 			if (err == ERROR_PIPE_CONNECTED) {
 				// 客户端在 ConnectNamedPipe 之前已连接，正常继续
 			} else {
-				// 管道已关闭或发生错误，退出循环
 				if (err != ERROR_OPERATION_ABORTED && err != ERROR_BROKEN_PIPE) {
 					LOG_ERROR("acceptLoop: ConnectNamedPipe failed with error {}", err);
 				}
-				// current 未入队，若非 listen_handle_ 则需要关闭
 				if (!current_consumed) {
 					::CloseHandle(current);
 				}
@@ -192,7 +182,6 @@ void WindowsIpcServer::Implement::acceptLoop()
 			}
 		}
 
-		// 将已连接的管道 HANDLE 推入工作队列
 		{
 			std::lock_guard<std::mutex> lock(queue_mutex_);
 			work_queue_.push(current);
@@ -200,12 +189,10 @@ void WindowsIpcServer::Implement::acceptLoop()
 		queue_cv_.notify_one();
 		current_consumed = true;
 
-		// 检查关闭标志（stop() 可能在队列推入后才将 running_ 置 false）
 		if (!running_.load()) {
 			break;
 		}
 
-		// 为下一个客户端创建新的管道实例（沿用相同的 DACL 配置）
 		PipeSecurityContext sec;
 		if (!sec.init()) {
 			LOG_WARN("acceptLoop: failed to build pipe DACL, falling back to default security");
@@ -219,22 +206,14 @@ void WindowsIpcServer::Implement::acceptLoop()
 		    0, sec.ptr());
 		if (current == INVALID_HANDLE_VALUE) {
 			if (running_.load()) {
-				LOG_ERROR("acceptLoop: CreateNamedPipe failed with error {}",
-				          ::GetLastError());
+				LOG_ERROR("acceptLoop: CreateNamedPipe failed with error {}", ::GetLastError());
 			}
 			break;
 		}
-		current_consumed = false; // 新句柄尚未入队
+		current_consumed = false;
 	}
 }
 
-// workerLoop 工作线程主循环：等待队列有任务，取出 HANDLE 处理连接；
-// 取到哨兵（INVALID_HANDLE_VALUE）时退出。
-//
-// 每个工作线程独立调用 CoInitializeEx，以确保 IUIAutomation 等 COM 对象
-// 可在 MTA（多线程套间）中安全使用。
-// S_FALSE 表示本线程已初始化（不视为错误）；CoUninitialize 总是与成功的
-// CoInitializeEx 成对调用。
 void WindowsIpcServer::Implement::workerLoop()
 {
 	HRESULT com_hr = ::CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -248,7 +227,7 @@ void WindowsIpcServer::Implement::workerLoop()
 			work_queue_.pop();
 		}
 		if (handle == INVALID_HANDLE_VALUE) {
-			break;
+			break; // 哨兵
 		}
 		processConnection(handle);
 	}
@@ -258,8 +237,6 @@ void WindowsIpcServer::Implement::workerLoop()
 	}
 }
 
-// processConnection 处理单个连接的完整请求-响应生命周期。
-// 连接 HANDLE 在进入时登记到 active_handles_，退出时移除，保证 stop() 可中断进行中的连接。
 void WindowsIpcServer::Implement::processConnection(HANDLE handle)
 {
 	{
@@ -272,8 +249,9 @@ void WindowsIpcServer::Implement::processConnection(HANDLE handle)
 		if (result.failure()) {
 			break;
 		}
-		std::string response = handleRequest(result.value());
+		std::string response = handleMessage(result.value());
 		if (response.empty()) {
+			// 通知类消息（如 endTask）无需回写
 			continue;
 		}
 		if (!FrameCodec::writeFrame(handle, response).ok()) {
@@ -290,111 +268,135 @@ void WindowsIpcServer::Implement::processConnection(HANDLE handle)
 	::CloseHandle(handle);
 }
 
-// handleRequest 解析 JSON-RPC 2.0 请求并返回响应字符串。
-std::string WindowsIpcServer::Implement::handleRequest(const std::string& request_str)
+// handleMessage 根据 type 字段将消息路由到对应处理逻辑。
+std::string WindowsIpcServer::Implement::handleMessage(const std::string& frame_str)
 {
-	nlohmann::json id = nullptr;
+	nlohmann::json msg;
 	try {
-		auto req = nlohmann::json::parse(request_str);
-		if (!req.is_object()) {
-			return makeErrorResponse(id, -32600, "invalid request: expected JSON object");
-		}
-		if (req.contains("id")) {
-			id = req["id"];
-		}
-		if (!req.contains("jsonrpc") || req["jsonrpc"] != "2.0") {
-			return makeErrorResponse(id, -32600, "invalid request: jsonrpc field must be \"2.0\"");
-		}
-		if (!req.contains("method") || !req["method"].is_string()) {
-			return makeErrorResponse(id, -32600, "invalid request: method must be a string");
-		}
-		bool is_notification = !req.contains("id");
-		std::string method = req["method"].get<std::string>();
-		nlohmann::json params = req.value("params", nlohmann::json::object());
-
-		std::string response = dispatchToModule(id, method, params);
-		return is_notification ? "" : response;
-
+		msg = nlohmann::json::parse(frame_str);
 	} catch (const nlohmann::json::parse_error&) {
-		return makeErrorResponse(nullptr, -32700, "parse error: invalid JSON");
-	} catch (const std::exception& e) {
-		return makeErrorResponse(id, -32603, std::string("internal error: ") + e.what());
+		LOG_WARN("ipc server: failed to parse message JSON, ignored");
+		return "";
 	}
+
+	if (!msg.is_object()) {
+		LOG_WARN("ipc server: received non-object message, ignored");
+		return "";
+	}
+
+	const std::string type = msg.value("type", std::string{});
+
+	// ── beginTask ──────────────────────────────────────────────────────────────
+	if (type == "beginTask") {
+		std::string task_id;
+		if (begin_task_handler_) {
+			try {
+				task_id = begin_task_handler_(
+				    msg.value("description",      std::string{}),
+				    msg.value("root_description", std::string{}),
+				    msg.value("parent_task_id",   std::string{}),
+				    msg.value("session_id",        std::string{}));
+			} catch (const std::exception& e) {
+				LOG_ERROR("ipc server: beginTask handler threw: {}", e.what());
+			}
+		} else {
+			LOG_WARN("ipc server: no TaskBeginHandler registered, returning empty task_id");
+		}
+		return nlohmann::json{
+			{"type",    "beginTask_response"},
+			{"task_id", task_id},
+		}.dump();
+	}
+
+	// ── endTask ────────────────────────────────────────────────────────────────
+	if (type == "endTask") {
+		if (end_task_handler_) {
+			try {
+				end_task_handler_(
+				    msg.value("task_id", std::string{}),
+				    msg.value("success", false));
+			} catch (const std::exception& e) {
+				LOG_ERROR("ipc server: endTask handler threw: {}", e.what());
+			}
+		}
+		return ""; // 通知语义，无响应
+	}
+
+	// ── capability ────────────────────────────────────────────────────────────
+	if (type == "capability") {
+		return handleCapability(msg);
+	}
+
+	LOG_WARN("ipc server: unknown message type '{}', ignored", type);
+	return "";
 }
 
-// dispatchToModule 将 "module.operation" 方法名拆分后路由到对应模块处理器。
-std::string WindowsIpcServer::Implement::dispatchToModule(const nlohmann::json& id,
-                                                          const std::string& method,
-                                                          const nlohmann::json& params)
+// handleCapability 处理 capability 消息：路由到注册的 CapabilityHandler，构造响应。
+std::string WindowsIpcServer::Implement::handleCapability(const nlohmann::json& msg)
 {
-	auto dot_pos = method.find('.');
-	if (dot_pos == std::string::npos || dot_pos == 0 || dot_pos == method.size() - 1) {
-		return makeErrorResponse(id, -32601,
-		                         "method not found: invalid format, expected module.operation");
-	}
-	std::string module_name = method.substr(0, dot_pos);
-	std::string operation   = method.substr(dot_pos + 1);
+	const int         id         = msg.value("id",         0);
+	const std::string task_id    = msg.value("task_id",    std::string{});
+	const std::string capability = msg.value("capability", std::string{});
+	const std::string operation  = msg.value("operation",  std::string{});
+	const nlohmann::json params  = msg.value("params",     nlohmann::json::object());
 
-	ModuleHandler handler;
+	if (capability.empty() || operation.empty()) {
+		return makeCapabilityResultError(id,
+		    Status::INVALID_ARGUMENT,
+		    "capability and operation fields are required");
+	}
+
+	CapabilityHandler handler;
 	{
 		std::lock_guard<std::mutex> lock(handlers_mutex_);
-		auto it = handlers_.find(module_name);
-		if (it == handlers_.end()) {
-			return makeErrorResponse(id, -32601,
-			                         "method not found: module \"" + module_name + "\" not registered");
+		auto it = capability_handlers_.find(capability);
+		if (it == capability_handlers_.end()) {
+			return makeCapabilityResultError(id,
+			    Status::CAPABILITY_NOT_FOUND,
+			    "capability not registered: " + capability);
 		}
 		handler = it->second;
 	}
 
-	auto result = handler(operation, params);
+	// handler 可能长时间阻塞（等待用户确认），此期间 write_mutex_ 已释放
+	Result<nlohmann::json> result = handler(task_id, operation, params);
+
 	if (result.success()) {
-		return makeSuccessResponse(id, result.value());
+		return makeCapabilityResultOk(id, result.value());
 	}
-	auto error_obj = converter_.convert(result.error());
-	return makeErrorResponse(id,
-	                         error_obj["code"].get<int>(),
-	                         error_obj["message"].get<std::string>());
-}
-
-// makeSuccessResponse 构造 JSON-RPC 2.0 成功响应。
-std::string WindowsIpcServer::Implement::makeSuccessResponse(const nlohmann::json& id,
-                                                             const nlohmann::json& result)
-{
-	return nlohmann::json{{"jsonrpc", "2.0"}, {"id", id}, {"result", result}}.dump();
-}
-
-// makeErrorResponse 构造 JSON-RPC 2.0 错误响应。
-std::string WindowsIpcServer::Implement::makeErrorResponse(const nlohmann::json& id,
-                                                           int code,
-                                                           const std::string& msg)
-{
-	return nlohmann::json{
-		{"jsonrpc", "2.0"},
-		{"id", id},
-		{"error", {{"code", code}, {"message", msg}}}
-	}.dump();
+	return makeCapabilityResultError(id,
+	    result.error().code,
+	    result.error().message ? result.error().message : "");
 }
 
 // ─── WindowsIpcServer 公开接口 ───────────────────────────────────────────────
 
 WindowsIpcServer::WindowsIpcServer()
 	: implement_(std::make_unique<Implement>())
-{
-}
+{}
 
 WindowsIpcServer::~WindowsIpcServer()
 {
 	stop();
 }
 
-// registerModule 注册一个模块的请求处理器（须在 start() 前调用）。
-void WindowsIpcServer::registerModule(std::string_view module_name, ModuleHandler handler)
+void WindowsIpcServer::registerCapability(std::string_view  capability_name,
+                                          CapabilityHandler handler)
 {
 	std::lock_guard<std::mutex> lock(implement_->handlers_mutex_);
-	implement_->handlers_[std::string(module_name)] = std::move(handler);
+	implement_->capability_handlers_[std::string(capability_name)] = std::move(handler);
 }
 
-// start 创建 Named Pipe，启动 Accept 线程和工作线程池。
+void WindowsIpcServer::setTaskBeginHandler(TaskBeginHandler handler)
+{
+	implement_->begin_task_handler_ = std::move(handler);
+}
+
+void WindowsIpcServer::setTaskEndHandler(TaskEndHandler handler)
+{
+	implement_->end_task_handler_ = std::move(handler);
+}
+
 Status WindowsIpcServer::start(std::string_view pipe_path, int thread_pool_size)
 {
 	if (implement_->running_.load()) {
@@ -417,21 +419,12 @@ Status WindowsIpcServer::start(std::string_view pipe_path, int thread_pool_size)
 	return Status::Ok();
 }
 
-// stop 停止服务端：
-//   1. 置 running_ = false
-//   2. CancelIoEx current_accept_handle_，中断 acceptLoop 当前轮次的 ConnectNamedPipe
-//      （无论是第几轮迭代，始终能可靠中断）
-//   3. 关闭 listen_handle_（第一轮迭代兜底 + 释放资源）
-//   4. CancelIoEx 所有活跃连接，中断 processConnection 中阻塞的 readFrame
-//   5. 清空排队 HANDLE，推入哨兵，唤醒所有 worker
-//   6. join 所有线程
 void WindowsIpcServer::stop()
 {
 	if (!implement_->running_.exchange(false)) {
 		return;
 	}
 
-	// 中断 acceptLoop 当前正在等待的 ConnectNamedPipe（任意迭代轮次均有效）
 	{
 		std::lock_guard<std::mutex> lk(implement_->current_accept_mutex_);
 		if (implement_->current_accept_handle_ != INVALID_HANDLE_VALUE) {
@@ -439,13 +432,11 @@ void WindowsIpcServer::stop()
 		}
 	}
 
-	// 关闭 listen_handle_（释放第一轮迭代占用的资源，或兜底第一轮 ConnectNamedPipe）
 	if (implement_->listen_handle_ != INVALID_HANDLE_VALUE) {
 		::CloseHandle(implement_->listen_handle_);
 		implement_->listen_handle_ = INVALID_HANDLE_VALUE;
 	}
 
-	// CancelIoEx 所有活跃连接，中断 processConnection 中阻塞的 ReadFile
 	{
 		std::lock_guard<std::mutex> lock(implement_->active_handles_mutex_);
 		for (HANDLE h : implement_->active_handles_) {
@@ -453,7 +444,6 @@ void WindowsIpcServer::stop()
 		}
 	}
 
-	// 清空排队 HANDLE 并推入哨兵（每个 worker 一个），唤醒所有 worker
 	{
 		std::lock_guard<std::mutex> lock(implement_->queue_mutex_);
 		while (!implement_->work_queue_.empty()) {

@@ -19,12 +19,11 @@ namespace daemon {
 struct DaemonConfig
 {
 	// ── 默认值常量（供结构体成员初始化与 parseToml 判断共用）────────────────────
-	static constexpr const char* DEFAULT_CONFIG_PATH       = "clawshell.toml";
-	static constexpr const char* DEFAULT_SOCKET_PATH       = "\\\\.\\pipe\\crew-shell-service";
-	static constexpr const char* DEFAULT_LOG_LEVEL         = "info";
-	static constexpr const char* DEFAULT_MODULE_DIR        = "";
-	static constexpr const char* DEFAULT_CONFIRM_SOCK_PATH = "\\\\.\\pipe\\crew-shell-service-confirm";
-	static constexpr int         DEFAULT_THREAD_POOL_SIZE  = 8;
+	static constexpr const char* DEFAULT_CONFIG_PATH      = "clawshell.toml";
+	static constexpr const char* DEFAULT_SOCKET_PATH      = "\\\\.\\pipe\\crew-shell-service";
+	static constexpr const char* DEFAULT_LOG_LEVEL        = "info";
+	static constexpr const char* DEFAULT_MODULE_DIR       = "";
+	static constexpr int         DEFAULT_THREAD_POOL_SIZE = 8;
 
 	// TOML 配置文件路径，由 CLI -c/--config 提供，或使用默认路径。
 	std::string config_path = DEFAULT_CONFIG_PATH;
@@ -44,8 +43,19 @@ struct DaemonConfig
 	// 模块 dll 所在目录，传入 CoreConfig 供 ModuleManager 使用。
 	std::string module_dir = DEFAULT_MODULE_DIR;
 
-	// 用户确认通道的本地通道路径（Windows: Named Pipe 路径）。
-	std::string confirm_socket_path = DEFAULT_CONFIRM_SOCK_PATH;
+	// ── UIService (Channel 2) 配置 ──────────────────────────────────────────
+	static constexpr const char* DEFAULT_UI_PIPE_PATH    = "\\\\.\\pipe\\crew-shell-service-ui";
+	static constexpr int         DEFAULT_UI_TIMEOUT_SECS = 60;
+	static constexpr const char* DEFAULT_UI_TIMEOUT_MODE = "timeout_deny";
+
+	// Channel 2 Named Pipe 路径。
+	std::string ui_pipe_path    = DEFAULT_UI_PIPE_PATH;
+
+	// 用户无响应时的超时时长（秒）；WAIT_FOREVER 时忽略。
+	int         ui_timeout_secs = DEFAULT_UI_TIMEOUT_SECS;
+
+	// 超时策略：wait_forever / timeout_deny / timeout_allow。
+	std::string ui_timeout_mode = DEFAULT_UI_TIMEOUT_MODE;
 
 	// core 层配置（模块列表），由 TOML [[modules]] 填充。
 	core::CoreConfig core;
