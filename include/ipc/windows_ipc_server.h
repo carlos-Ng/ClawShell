@@ -2,6 +2,7 @@
 
 #include "ipc/ipc_server.h"
 
+#include <functional>
 #include <memory>
 
 namespace clawshell {
@@ -31,6 +32,9 @@ public:
 
 	Status start(std::string_view pipe_path, int thread_pool_size = 8) override;
 	void stop() override;
+
+	int  activeConnectionCount() const override;
+	void setOnConnectionChanged(std::function<void(int)> callback) override;
 
 private:
 	struct Implement;

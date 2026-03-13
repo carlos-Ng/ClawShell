@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<OutputType>WinExe</OutputType>
+		<TargetFramework>net8.0-windows</TargetFramework>
+		<UseWindowsForms>true</UseWindowsForms>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>disable</ImplicitUsings>
+		<AssemblyName>ClawShellUI</AssemblyName>
+		<RootNamespace>ClawShellUI</RootNamespace>
+		<AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+		<!-- 发布命令: dotnet publish -r win-x64 -c Release -p:PublishSingleFile=true -p:SelfContained=true -->
+	</PropertyGroup>
+
+</Project>
