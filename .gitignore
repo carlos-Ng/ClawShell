@@ -1,0 +1,12 @@
+# CMake build output
+build/
+
+# Distribution package
+dist/
+
+# .NET build artifacts
+ui/bin/
+ui/obj/
+
+# Claude project metadata
+.claude/

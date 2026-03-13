@@ -1,7 +1,0 @@
-C:\Users\polymorphours\ClawShell\dist\bin\ClawShellUI.pdb
-C:\Users\polymorphours\ClawShell\dist\bin\D3DCompiler_47_cor3.dll
-C:\Users\polymorphours\ClawShell\dist\bin\PenImc_cor3.dll
-C:\Users\polymorphours\ClawShell\dist\bin\PresentationNative_cor3.dll
-C:\Users\polymorphours\ClawShell\dist\bin\vcruntime140_cor3.dll
-C:\Users\polymorphours\ClawShell\dist\bin\wpfgfx_cor3.dll
-C:\Users\polymorphours\ClawShell\dist\bin\ClawShellUI.exe
