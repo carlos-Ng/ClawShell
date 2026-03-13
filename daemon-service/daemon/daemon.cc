@@ -278,7 +278,8 @@ Status Daemon::init(DaemonConfig config)
 		    timeout_mode,
 		    std::chrono::seconds(config.ui_timeout_secs),
 		    [this]() -> std::string {
-			    return ipc::UIMessageFactory::createStatus(implement_->running_.load());
+			    bool agent_connected = implement_->ipc_server_.activeConnectionCount() > 0;
+			    return ipc::UIMessageFactory::createStatus(agent_connected);
 		    });
 
 		if (!ui_status.ok()) {
@@ -286,6 +287,15 @@ Status Daemon::init(DaemonConfig config)
 		} else {
 			implement_->service_.setUIService(&implement_->ui_service_);
 			LOG_INFO("ui service listening on {}", config.ui_pipe_path);
+
+			// Agent 连接/断开时主动向 UI 推送最新状态
+			implement_->ipc_server_.setOnConnectionChanged([this](int count) {
+				bool agent_connected = count > 0;
+				implement_->ui_service_.push(
+				    ipc::UIMessageFactory::createStatus(agent_connected));
+				LOG_INFO("daemon: agent connection count changed to {}, pushed status to UI",
+				         count);
+			});
 		}
 	}
 

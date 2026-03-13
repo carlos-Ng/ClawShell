@@ -107,6 +107,11 @@ struct WindowsIpcServer::Implement
 	std::set<HANDLE> active_handles_;
 	std::mutex       active_handles_mutex_;
 
+	// 活跃 Agent 连接计数（原子，worker 线程进出 processConnection 时维护）
+	std::atomic<int>          active_connection_count_{0};
+	std::function<void(int)>  on_connection_changed_;
+	std::mutex                on_connection_changed_mutex_;
+
 	// ── 内部方法 ──────────────────────────────────────────────────────────────
 
 	Status bindAndListen(const std::string& pipe_name);
@@ -244,6 +249,13 @@ void WindowsIpcServer::Implement::processConnection(HANDLE handle)
 		active_handles_.insert(handle);
 	}
 
+	// 连接建立：计数 +1，通知外部
+	int count = active_connection_count_.fetch_add(1) + 1;
+	{
+		std::lock_guard<std::mutex> lk(on_connection_changed_mutex_);
+		if (on_connection_changed_) on_connection_changed_(count);
+	}
+
 	while (running_.load()) {
 		auto result = FrameCodec::readFrame(handle);
 		if (result.failure()) {
@@ -262,6 +274,13 @@ void WindowsIpcServer::Implement::processConnection(HANDLE handle)
 	{
 		std::lock_guard<std::mutex> lock(active_handles_mutex_);
 		active_handles_.erase(handle);
+	}
+
+	// 连接断开：计数 -1，通知外部
+	count = active_connection_count_.fetch_sub(1) - 1;
+	{
+		std::lock_guard<std::mutex> lk(on_connection_changed_mutex_);
+		if (on_connection_changed_) on_connection_changed_(count);
 	}
 
 	::DisconnectNamedPipe(handle);
@@ -395,6 +414,17 @@ void WindowsIpcServer::setTaskBeginHandler(TaskBeginHandler handler)
 void WindowsIpcServer::setTaskEndHandler(TaskEndHandler handler)
 {
 	implement_->end_task_handler_ = std::move(handler);
+}
+
+int WindowsIpcServer::activeConnectionCount() const
+{
+	return implement_->active_connection_count_.load();
+}
+
+void WindowsIpcServer::setOnConnectionChanged(std::function<void(int)> callback)
+{
+	std::lock_guard<std::mutex> lk(implement_->on_connection_changed_mutex_);
+	implement_->on_connection_changed_ = std::move(callback);
 }
 
 Status WindowsIpcServer::start(std::string_view pipe_path, int thread_pool_size)

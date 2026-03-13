@@ -111,6 +111,15 @@ public:
 
 	// stop 优雅停止服务端，等待所有工作线程安全退出。
 	virtual void stop() = 0;
+
+	// activeConnectionCount 返回当前已建立连接的 Channel 1 客户端（Agent）数量。
+	// 线程安全，可从任意线程调用。
+	virtual int activeConnectionCount() const = 0;
+
+	// setOnConnectionChanged 注册连接数变化回调，在连接建立或断开时调用。
+	// 回调参数为变化后的连接数（0 = 无 Agent 连接）。
+	// 回调运行在 worker 线程上，实现需保证线程安全。
+	virtual void setOnConnectionChanged(std::function<void(int)> callback) = 0;
 };
 
 } // namespace ipc
