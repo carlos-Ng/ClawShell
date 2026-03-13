@@ -33,9 +33,9 @@ endif()
 
 set_target_properties(capability_ax PROPERTIES
     OUTPUT_NAME  "capability_ax"
-    # 输出到 build/src/，与 config 中 module_dir = "build/src" 一致
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/src"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/src"
+    # 输出到 build/daemon-service/，与 config 中 module_dir = "build/daemon-service" 一致
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/daemon-service"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/daemon-service"
 )
 
 # Convenience alias: `cmake --build . --target ax`

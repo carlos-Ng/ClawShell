@@ -139,10 +139,31 @@ target_compile_definitions(crew_shell_service PRIVATE
     CLAWSHELL_VERSION="${PROJECT_VERSION}"
 )
 
+# ─── UI (C# WinForms) ────────────────────────────────────────────────────────
+# clawshell_ui 随 ALL_BUILD 一并构建，与 daemon 平行执行。
+# dist target 会进一步 publish 为自包含单文件 exe，输出到 dist/bin/。
+
+find_program(DOTNET_EXECUTABLE dotnet)
+if(NOT DOTNET_EXECUTABLE)
+    message(WARNING "dotnet not found — clawshell_ui target and UI packaging skipped")
+else()
+    # .NET 只接受 Debug / Release 两种配置名。
+    # CMake 的 MinSizeRel / RelWithDebInfo 均映射到 Release。
+    # DOTNET_CLI_UI_LANGUAGE=en-US：强制 dotnet CLI 输出英文，
+    # 避免 Windows GBK 控制台下中文 UTF-8 输出乱码。
+    add_custom_target(clawshell_ui ALL
+        COMMAND ${CMAKE_COMMAND} -E env DOTNET_CLI_UI_LANGUAGE=en-US
+                ${DOTNET_EXECUTABLE} build "${CMAKE_SOURCE_DIR}/ui"
+                -c $<IF:$<CONFIG:Debug>,Debug,Release> --nologo -v quiet
+        COMMENT "Building ClawShellUI (.NET 8 WinForms)"
+        VERBATIM
+    )
+endif()
+
 # ─── 发布目录 dist ───────────────────────────────────────────────────────────
 #
-# 用于手工测试与打包：将 daemon、dll、config 复制到 dist/。
-# 结构：dist/bin/crew_shell_service.exe, dist/lib/*.dll, dist/config/*.toml
+# 用于手工测试与打包：将 daemon、dll、UI、config 复制到 dist/。
+# 结构：dist/bin/{crew_shell_service.exe, ClawShellUI.exe}, dist/lib/*.dll, dist/config/*.toml
 #
 # 构建：cmake --build <build_dir> --target dist
 # 运行：cd dist && .\bin\crew_shell_service.exe -f -c clawshell.toml
@@ -179,6 +200,20 @@ add_custom_target(dist
     COMMENT "Populating dist/ with daemon, dlls and config"
     DEPENDS crew_shell_service capability_ax security_filter
 )
+
+if(DOTNET_EXECUTABLE)
+    add_custom_command(TARGET dist POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E env DOTNET_CLI_UI_LANGUAGE=en-US
+                ${DOTNET_EXECUTABLE} publish "${CMAKE_SOURCE_DIR}/ui"
+                -r win-x64 -c Release
+                -p:PublishSingleFile=true -p:SelfContained=true
+                --nologo -v quiet
+                -o "${CLAWSHELL_DIST_DIR}/bin"
+        COMMENT "Publishing ClawShellUI to dist/bin"
+        VERBATIM
+    )
+    add_dependencies(dist clawshell_ui)
+endif()
 
 # ─── Tests ───────────────────────────────────────────────────────────────────
 
