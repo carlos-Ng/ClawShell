@@ -1,4 +1,4 @@
-# VMM Phase Progress — feat/vmm 分支
+# VMM Phase Progress
 
 > 最后更新：2026-03-14
 > 本文件用于网络中断后快速恢复上下文，不替代代码注释。
@@ -19,14 +19,15 @@
 | `include/common/status.h` | ✅ 补充 | 新增 ALREADY_EXISTS / NOT_FOUND 两个 Status::Code |
 | `vmm/CMakeLists.txt` | ✅ 完成 | clawshell_vmm 静态库 + vmm.exe 占位，链接 Ole32/ws2_32/wslapi/shlwapi |
 | `vmm/main.cc` | ✅ 完成 | vmm.exe 入口占位 |
+| `mcp/server/vsock_client.py` | ✅ 完成 | VM 侧 AF_VSOCK 客户端，ClawShell FrameCodec 协议（4B 长度前缀 + JSON body） |
+| `mcp/server/mcp_server.py` | ✅ 完成 | VM 侧 MCP Server 入口，stdio JSON-RPC → VsockClient → Host |
+| `mcp/client/clawshell-gui/SKILL.md` | ✅ 完成 | OpenClaw skill 定义，指引 agent 使用 GUI tools |
 
 ---
 
 ## 2. 待完成任务
 
-| # | 文件 | 说明 |
-|---|------|------|
-| 5 | `mcp/` Python | 从 AI-agent-sec vm-side/mcp_server/ 复制，frame 协议改为 FrameCodec |
+（暂无）
 
 ---
 
@@ -97,11 +98,72 @@ std::string  last_diagnostics_;            // 合并 last_wsl_diagnostics_
 
 ---
 
-## 5. 下一步恢复工作时的入口
+## 5. mcp/ Python 模块迁移要点
+
+### 5.1 协议变更
+
+| 项目 | 旧（AI-agent-sec） | 新（ClawShell） |
+|------|---------------------|-----------------|
+| 帧头 | magic(2B) + length(4B) + type(1B) + task_id(16B) | length(4B) |
+| 帧头大小 | 23 字节 | 4 字节 |
+| 操作路由 | FrameType 枚举（1B 二进制） | JSON body `{"type": "capability", "capability": "ax", "operation": "..."}` |
+| 任务 ID | 帧头中 16 字节二进制 | JSON body `"task_id"` 字段（十六进制字符串） |
+| 响应类型 | FrameType.RESP_SUCCESS / RESP_ERROR | `{"success": true/false}` |
+
+### 5.2 便捷方法统一入口
+
+所有 ax 插件操作统一通过 `call_capability("ax", operation, params)` 调用，
+对应 Host 侧 Channel 1 的 `"capability"` 消息类型 → CapabilityService → ax 插件。
+
+---
+
+## 6. mcp/ 目录结构与 OpenClaw 集成
+
+### 6.1 目录结构
 
 ```
-Task #5（mcp/ Python）
+mcp/
+├── server/                          ← MCP Server（运行在 VM 内）
+│   ├── vsock_client.py              ← AF_VSOCK 客户端（FrameCodec → Host daemon）
+│   └── mcp_server.py               ← MCP Server 入口（stdio JSON-RPC）
+│
+└── client/                          ← OpenClaw 集成
+    └── clawshell-gui/               ← OpenClaw skill
+        └── SKILL.md                 ← skill 定义（agent 触发指南）
 ```
 
-vm_manager.cc 和 CMakeLists.txt 均已完成。
-附带修复：vsock_server.cc 中 sendExact/recvExact 提取为自由函数（解决编译错误）。
+### 6.2 数据流
+
+```
+OpenClaw (VM)
+  └─ acpx mcpServers: stdio 启动 mcp_server.py
+       └─ VsockClient: AF_VSOCK (CID=2, Port=100)
+            └─ Host daemon: FrameCodec → CapabilityService → ax 插件
+```
+
+### 6.3 OpenClaw 配置
+
+```json
+// ~/.openclaw/openclaw.json
+{
+  "plugins": {
+    "acpx": {
+      "mcpServers": {
+        "clawshell-gui": {
+          "command": "python3",
+          "args": ["/path/to/clawshell/mcp/server/mcp_server.py"]
+        }
+      }
+    }
+  }
+}
+```
+
+OpenClaw 的 acpx 扩展原生支持 stdio MCP Server，会自动发现 get_manifest 返回的 tools。
+不需要单独写 MCP client——OpenClaw 自带。
+
+---
+
+## 7. 下一步
+
+所有 VMM Phase 任务已完成。
