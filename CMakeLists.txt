@@ -110,6 +110,12 @@ target_link_libraries(clawshell_ipc PUBLIC clawshell_headers)
 
 add_subdirectory(daemon-service/capability/ax)
 
+# ─── VMM library ─────────────────────────────────────────────────────────────
+
+if(WIN32)
+    add_subdirectory(vmm)
+endif()
+
 # ─── Security modules ─────────────────────────────────────────────────────────
 
 add_library(security_filter SHARED
@@ -220,9 +226,14 @@ endif()
 option(BUILD_TESTS "Build test programs" OFF)
 if(BUILD_TESTS)
     enable_testing()
-    add_subdirectory(tests/capability/ax)
+
+    # ── Google Test（vcpkg 提供）────────────────────────────────────────────
+    find_package(GTest CONFIG REQUIRED)
+
+    # ── Test targets ─────────────────────────────────────────────────────────
+    add_subdirectory(tests/vmm)
     add_subdirectory(tests/core)
-    add_subdirectory(tests/daemon)
+    add_subdirectory(tests/common)
     add_subdirectory(tests/ipc)
     add_subdirectory(tests/security/filter)
 endif()
