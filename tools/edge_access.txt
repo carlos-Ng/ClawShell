@@ -1,0 +1,27 @@
+# AgentEnclave ax 脚本示例
+# 用法：python3 tools/ax_test_client.py -f tools/ax_script_example.txt
+
+# 设置safari浏览器地址栏, 填充地址为www.google.com
+get_ui_tree {"window_id": "w21176_17090E", "depth": 20}
+set_value {"element_path": "w21176_17090E/AXScrollArea[新建标签页 - Microsoft Edge]/AXScrollArea[0]/AXScrollArea[0]/AXScrollArea[1]/AXScrollArea[0]/AXToolbar[view_1000]/AXScrollArea[0]/AXGroup[0]/AXTextField[view_1022]", "value": "www.google.com"}
+# 设置地址栏为焦点
+#focus {"element_path": "w21176_17090E/AXScrollArea[新建标签页 - Microsoft Edge]/AXScrollArea[0]/AXScrollArea[0]/AXScrollArea[1]/AXScrollArea[0]/AXToolbar[view_1000]/AXScrollArea[0]/AXGroup[0]/AXTextField[view_1022]"}
+
+# 输入回车键进行导航
+key_press {"window_id": "w21176_17090E", "key": "Return"}
+
+
+# 1. 列出所有窗口
+# list_windows
+
+# 2. 获取第一个窗口的 UI 树（将 w123_0 替换为 list_windows 返回的实际 window_id）
+# get_ui_tree {"window_id": "w123_0", "max_depth": 3}
+
+# 3. 激活指定窗口
+# activate {"window_id": "w123_0"}
+
+# 4. 发送按键
+# key_press {"window_id": "w123_0", "key": "Return"}
+
+# 5. 组合键
+# key_combo {"window_id": "w123_0", "keys": ["Cmd", "C"]}

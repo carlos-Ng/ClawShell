@@ -50,6 +50,10 @@ struct Status {
 		NOT_INITIALIZED,       // 服务或模块未初始化即被调用
 		CAPABILITY_NOT_FOUND,  // 请求的能力模块未注册或未加载
 		MODULE_LOAD_ERROR,     // 动态库加载失败（dlopen/dlsym 错误）
+
+		// ── 通用资源 ─────────────────────────────────────────────────────────────
+		ALREADY_EXISTS,        // 同名资源已存在（如 WSL distro 重复创建）
+		NOT_FOUND,             // 指定资源不存在
 	};
 
 	Code        code;
@@ -167,6 +171,8 @@ constexpr const char* statusMessage(Status::Code code) noexcept
 	case Status::NOT_INITIALIZED:      return "not initialized";
 	case Status::CAPABILITY_NOT_FOUND: return "capability not found";
 	case Status::MODULE_LOAD_ERROR:    return "module load error";
+	case Status::ALREADY_EXISTS:       return "already exists";
+	case Status::NOT_FOUND:            return "not found";
 	}
 	return "unknown";
 }
