@@ -44,34 +44,34 @@ The host-side ClawShell daemon must be running and the vsock server listening on
 
 ### Task Lifecycle
 
-- `gui.begin_task` — Start a new task session. Returns a `task_id` used for security tracking.
+- `gui__begin_task` — Start a new task session. Returns a `task_id` used for security tracking.
   Required params: `session_id`, `root_description`.
-- `gui.end_task` — End the current task. Optional params: `task_id`, `status`.
+- `gui__end_task` — End the current task. Optional params: `task_id`, `status`.
 
-Always call `gui.begin_task` before performing GUI operations, and `gui.end_task` when done.
+Always call `gui__begin_task` before performing GUI operations, and `gui__end_task` when done.
 The task context enables the host's security chain to audit and authorize operations.
 
 ### Window Discovery
 
-- `gui.list_windows` — List all visible top-level windows. Use this first to discover available targets.
-- `gui.get_ui_tree` — Get the accessibility control tree of a specific window.
+- `gui__list_windows` — List all visible top-level windows. Use this first to discover available targets.
+- `gui__get_ui_tree` — Get the accessibility control tree of a specific window.
   Required: `window_id`. Optional: `max_depth` (default 8), `include_bounds`.
-- `gui.activate_window` — Bring a window to the foreground.
+- `gui__activate_window` — Bring a window to the foreground.
   Required: `window_id`.
 
 ### Interaction
 
-- `gui.click` — Click a UI element by accessibility path. Required: `element_path`.
-- `gui.set_value` — Set text in an input field. Required: `element_path`. Optional: `value`.
+- `gui__click` — Click a UI element by accessibility path. Required: `element_path`.
+- `gui__set_value` — Set text in an input field. Required: `element_path`. Optional: `value`.
 
 ### Typical Workflow
 
 ```
-1. gui.begin_task  → get task_id
-2. gui.list_windows  → find target window
-3. gui.get_ui_tree  → discover element paths
-4. gui.click / gui.set_value  → interact
-5. gui.end_task  → close session
+1. gui__begin_task  → get task_id
+2. gui__list_windows  → find target window
+3. gui__get_ui_tree  → discover element paths
+4. gui__click / gui__set_value  → interact
+5. gui__end_task  → close session
 ```
 
 ## Notes
