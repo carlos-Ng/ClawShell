@@ -4,6 +4,7 @@
 # 用法：sudo ./build-rootfs.sh [选项] [输出文件]
 #
 #   选项：
+#     --src DIR      ClawShell 源码目录（含 mcp/、scripts/ 等）
 #     --clean        清除所有 checkpoint，完全重新构建
 #     --from N       从阶段 N 开始（丢弃 N 及之后的 checkpoint）
 #     --list         列出已有 checkpoint 状态
@@ -11,6 +12,7 @@
 #
 #   示例：
 #     sudo ./build-rootfs.sh                    # 自动断点续建
+#     sudo ./build-rootfs.sh --src /mnt/c/Users/me/ClawShell  # 指定源码目录
 #     sudo ./build-rootfs.sh --clean            # 全新构建（保留下载缓存）
 #     sudo ./build-rootfs.sh --from 5           # 从阶段 5 重新开始
 #     sudo ./build-rootfs.sh --list             # 查看哪些阶段已完成
@@ -45,11 +47,11 @@ APT_CACHE_DIR="$CACHE_DIR/apt-archives"       # deb 包持久缓存
 DEB_TARBALL="$CACHE_DIR/debootstrap-debs.tar"  # debootstrap 预下载 tarball
 
 # debootstrap 的 --include 包列表（下载和安装都要用，提取为变量）
-DEBOOTSTRAP_INCLUDE="systemd,systemd-sysv,dbus,ca-certificates,curl,wget,gnupg,locales,procps,iproute2,iputils-ping,less,vim-tiny,sudo"
+DEBOOTSTRAP_INCLUDE="systemd,systemd-sysv,dbus,ca-certificates,curl,wget,gnupg,git,locales,procps,iproute2,iputils-ping,less,vim-tiny,sudo"
 
-# ClawShell 源码目录（脚本所在位置的上级）
+# ClawShell 源码目录（默认从脚本位置推导，可通过 --src 覆盖）
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CLAWSHELL_SRC="$(dirname "$SCRIPT_DIR")"
+CLAWSHELL_SRC=""  # 由参数解析或自动检测填充
 
 TOTAL_STAGES=7
 
@@ -62,6 +64,10 @@ PURGE_CACHE=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --src)
+            CLAWSHELL_SRC="$2"
+            shift 2
+            ;;
         --clean)
             CLEAN=true
             shift
@@ -102,6 +108,44 @@ if ! command -v debootstrap &>/dev/null; then
 fi
 
 mkdir -p "$CACHE_DIR" "$APT_CACHE_DIR"
+
+# ── 检测 ClawShell 源码目录 ──────────────────────────────────────────────
+
+if [[ -z "$CLAWSHELL_SRC" ]]; then
+    # 自动检测：脚本所在目录的上级
+    _auto="$(dirname "$SCRIPT_DIR")"
+    if [[ -f "$_auto/mcp/server/mcp_server.py" ]]; then
+        CLAWSHELL_SRC="$_auto"
+    fi
+fi
+
+# 如果自动检测失败，尝试常见的 Windows 挂载路径
+if [[ -z "$CLAWSHELL_SRC" || ! -f "$CLAWSHELL_SRC/mcp/server/mcp_server.py" ]]; then
+    for _try in \
+        /mnt/c/Users/*/ClawShell \
+        /mnt/d/ClawShell \
+        /mnt/c/ClawShell; do
+        # shellcheck disable=SC2086
+        for _dir in $_try; do
+            if [[ -f "$_dir/mcp/server/mcp_server.py" ]]; then
+                CLAWSHELL_SRC="$_dir"
+                break 2
+            fi
+        done
+    done
+fi
+
+if [[ -z "$CLAWSHELL_SRC" || ! -f "$CLAWSHELL_SRC/mcp/server/mcp_server.py" ]]; then
+    echo "错误：无法找到 ClawShell 源码目录。" >&2
+    echo "" >&2
+    echo "请使用 --src 指定源码路径，例如：" >&2
+    echo "  sudo $0 --src /mnt/c/Users/你的用户名/ClawShell" >&2
+    echo "" >&2
+    echo "源码目录应包含 mcp/server/mcp_server.py" >&2
+    exit 1
+fi
+
+echo "ClawShell 源码目录: $CLAWSHELL_SRC"
 
 # ── checkpoint 工具函数 ──────────────────────────────────────────────────
 
@@ -455,7 +499,12 @@ if ! run_stage 5 "安装 OpenClaw"; then
 
         pnpm add -g openclaw@latest
 
-        openclaw --version || echo 'openclaw installed (version check may need gateway)'
+        # 严格验证：openclaw 必须安装成功，否则不存 checkpoint
+        if ! command -v openclaw &>/dev/null; then
+            echo '错误：openclaw 安装失败，未找到可执行文件' >&2
+            exit 1
+        fi
+        openclaw --version
     "
 
     umount_vfs
