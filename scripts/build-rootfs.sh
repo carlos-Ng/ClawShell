@@ -642,6 +642,11 @@ if ! run_stage 5 "安装 OpenClaw"; then
         export PNPM_HOME=/usr/local/share/pnpm
         export PATH=\$PNPM_HOME:\$PATH
 
+        # openclaw 的依赖 @whiskeysockets/baileys 需要 git ls-remote
+        # chroot 是隔离环境，即使宿主装了 git 也看不到，必须在里面装
+        apt-get update -qq
+        apt-get install -y -qq git build-essential python3-dev
+
         pnpm add -g openclaw@latest
 
         # 严格验证：openclaw 必须安装成功，否则不存 checkpoint
