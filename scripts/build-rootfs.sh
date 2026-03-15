@@ -36,7 +36,7 @@ set -euo pipefail
 SUITE="bookworm"
 MIRROR="https://deb.debian.org/debian"
 ROOTFS_DIR="/tmp/clawshell-rootfs"
-OUTPUT="clawshell-rootfs.tar.gz"
+OUTPUT="$CACHE_DIR/clawshell-rootfs.tar.gz"
 NODE_MAJOR=22
 CLAWSHELL_USER="clawshell"
 MCP_INSTALL_DIR="/opt/clawshell/mcp"
@@ -89,7 +89,7 @@ while [[ $# -gt 0 ]]; do
             exit 1
             ;;
         *)
-            OUTPUT="$1"
+            OUTPUT="$(cd "$(dirname "$1")" 2>/dev/null && pwd)/$(basename "$1")"
             shift
             ;;
     esac
@@ -744,7 +744,10 @@ if ! run_stage 7 "清理瘦身"; then
 
         # 清理文档和 man pages
         rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/*
-        rm -rf /usr/share/locale/!(en|en_US|locale.alias)
+        # 删除非英语 locale（保留 en、en_US、locale.alias）
+        find /usr/share/locale -mindepth 1 -maxdepth 1 -type d \
+            ! -name 'en' ! -name 'en_US' -exec rm -rf {} +
+        rm -f /usr/share/locale/*.alias 2>/dev/null || true
 
         # 清理日志
         find /var/log -type f -delete
@@ -778,11 +781,16 @@ tar -czf "$OUTPUT" -C "$ROOTFS_DIR" .
 echo ""
 echo "=========================================="
 echo " 构建完成！"
-echo " 输出：$OUTPUT ($(du -sh "$OUTPUT" | cut -f1))"
+echo ""
+echo " 输出文件：$OUTPUT"
+echo " 文件大小：$(du -sh "$OUTPUT" | cut -f1)"
 echo " rootfs：$(du -sh "$ROOTFS_DIR" | cut -f1)"
 echo ""
-echo " 导入 WSL2："
-echo "   wsl --import ClawShell C:\\ClawShell\\vm $OUTPUT"
+echo " 在 WSL 内复制到 Windows 可访问位置："
+echo "   cp $OUTPUT /mnt/c/Users/\$(whoami)/clawshell-rootfs.tar.gz"
+echo ""
+echo " 然后在 Windows PowerShell 中导入："
+echo "   wsl --import ClawShell C:\\ClawShell\\vm C:\\Users\\<用户名>\\clawshell-rootfs.tar.gz"
 echo ""
 echo " 启动："
 echo "   wsl -d ClawShell"
