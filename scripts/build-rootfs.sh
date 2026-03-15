@@ -121,6 +121,16 @@ chroot "$ROOTFS_DIR" bash -c "
     corepack enable
     corepack prepare pnpm@latest --activate
 
+    # 配置 pnpm 全局目录（chroot 内无 shell profile，手动创建）
+    export PNPM_HOME=/usr/local/share/pnpm
+    mkdir -p \$PNPM_HOME
+
+    # 写入系统级 profile，所有用户登录后自动生效
+    cat > /etc/profile.d/pnpm.sh <<'PNPMSH'
+export PNPM_HOME=/usr/local/share/pnpm
+export PATH=\$PNPM_HOME:\$PATH
+PNPMSH
+
     node --version
     pnpm --version
 "
@@ -130,6 +140,9 @@ chroot "$ROOTFS_DIR" bash -c "
 echo "=== [5/7] 安装 OpenClaw ==="
 
 chroot "$ROOTFS_DIR" bash -c "
+    export PNPM_HOME=/usr/local/share/pnpm
+    export PATH=\$PNPM_HOME:\$PATH
+
     # 用 pnpm 全局安装
     pnpm add -g openclaw@latest
 
@@ -202,6 +215,9 @@ WSL
 echo "=== [7/7] 清理 + 打包 ==="
 
 chroot "$ROOTFS_DIR" bash -c "
+    export PNPM_HOME=/usr/local/share/pnpm
+    export PATH=\$PNPM_HOME:\$PATH
+
     # 清理 apt 缓存
     apt-get clean
     rm -rf /var/lib/apt/lists/*
