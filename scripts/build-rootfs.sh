@@ -95,21 +95,109 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# ── 前置检查 ──────────────────────────────────────────────────────────────
+# ── 快速模式（不需要 preflight 的操作）────────────────────────────────────
+
+# --list 只读缓存状态，不需要完整检查
+if $LIST_ONLY; then
+    mkdir -p "$CACHE_DIR" "$APT_CACHE_DIR"
+    list_checkpoints
+    exit 0
+fi
+
+# --purge-cache 只清缓存，不需要完整检查
+if $PURGE_CACHE; then
+    echo "清除下载缓存 ..."
+    rm -f "$DEB_TARBALL"
+    rm -rf "$APT_CACHE_DIR"
+    mkdir -p "$APT_CACHE_DIR"
+    echo "下载缓存已清除。"
+    echo "(checkpoint 未清除，如需清除请加 --clean)"
+    exit 0
+fi
+
+# ── 前置检查（Preflight） ─────────────────────────────────────────────────
+#
+# 在真正开始构建之前，统一检查所有依赖项：
+#   1. 运行权限（root）
+#   2. 宿主机必备工具
+#   3. ClawShell 源码目录及关键文件
+#   4. 磁盘空间
+# 检查失败会一次性列出所有问题，而不是跑到一半才报错。
+
+echo ""
+echo "══════════════════════════════════════════"
+echo " Preflight 检查"
+echo "══════════════════════════════════════════"
+echo ""
+
+PREFLIGHT_ERRORS=()
+PREFLIGHT_WARNINGS=()
+
+# ── 1. 权限检查 ──────────────────────────────────────────────────────────
 
 if [[ $EUID -ne 0 ]]; then
-    echo "错误：请以 root 运行（sudo $0）" >&2
+    echo "  ✗ 需要 root 权限" >&2
+    echo "" >&2
+    echo "请使用：sudo $0 $*" >&2
     exit 1
 fi
+echo "  ✓ root 权限"
 
-if ! command -v debootstrap &>/dev/null; then
-    echo "正在安装 debootstrap..."
-    apt-get update -qq && apt-get install -y -qq debootstrap
+# ── 2. 宿主机工具检查 ────────────────────────────────────────────────────
+
+# 必备工具：不可缺少，构建无法继续
+REQUIRED_TOOLS=(
+    "debootstrap:创建 Debian 基础系统:debootstrap"
+    "tar:打包/解包 rootfs 和 checkpoint:tar"
+    "gzip:压缩/解压 tarball:gzip"
+    "mount:挂载虚拟文件系统到 chroot:mount"
+    "umount:卸载虚拟文件系统:umount"
+    "chroot:在 rootfs 内执行命令:coreutils"
+)
+
+MISSING_TOOLS=()
+AUTO_INSTALL_PKGS=()
+
+for entry in "${REQUIRED_TOOLS[@]}"; do
+    IFS=: read -r cmd purpose pkg <<< "$entry"
+    if command -v "$cmd" &>/dev/null; then
+        echo "  ✓ $cmd"
+    else
+        echo "  ✗ $cmd — $purpose"
+        MISSING_TOOLS+=("$cmd")
+        AUTO_INSTALL_PKGS+=("$pkg")
+    fi
+done
+
+# 尝试自动安装缺失的工具
+if [[ ${#MISSING_TOOLS[@]} -gt 0 ]]; then
+    echo ""
+    echo "  缺少 ${#MISSING_TOOLS[@]} 个工具，尝试自动安装: ${AUTO_INSTALL_PKGS[*]}"
+
+    # 去重
+    UNIQUE_PKGS=($(printf '%s\n' "${AUTO_INSTALL_PKGS[@]}" | sort -u))
+
+    if apt-get update -qq 2>/dev/null && apt-get install -y -qq "${UNIQUE_PKGS[@]}" 2>/dev/null; then
+        echo ""
+        # 重新验证
+        STILL_MISSING=()
+        for cmd in "${MISSING_TOOLS[@]}"; do
+            if command -v "$cmd" &>/dev/null; then
+                echo "  ✓ $cmd (已自动安装)"
+            else
+                STILL_MISSING+=("$cmd")
+            fi
+        done
+
+        if [[ ${#STILL_MISSING[@]} -gt 0 ]]; then
+            PREFLIGHT_ERRORS+=("以下工具安装失败: ${STILL_MISSING[*]}")
+        fi
+    else
+        PREFLIGHT_ERRORS+=("自动安装失败，请手动安装: apt-get install ${UNIQUE_PKGS[*]}")
+    fi
 fi
 
-mkdir -p "$CACHE_DIR" "$APT_CACHE_DIR"
-
-# ── 检测 ClawShell 源码目录 ──────────────────────────────────────────────
+# ── 3. ClawShell 源码目录检查 ────────────────────────────────────────────
 
 if [[ -z "$CLAWSHELL_SRC" ]]; then
     # 自动检测：脚本所在目录的上级
@@ -135,17 +223,93 @@ if [[ -z "$CLAWSHELL_SRC" || ! -f "$CLAWSHELL_SRC/mcp/server/mcp_server.py" ]]; 
     done
 fi
 
-if [[ -z "$CLAWSHELL_SRC" || ! -f "$CLAWSHELL_SRC/mcp/server/mcp_server.py" ]]; then
-    echo "错误：无法找到 ClawShell 源码目录。" >&2
+if [[ -z "$CLAWSHELL_SRC" || ! -d "$CLAWSHELL_SRC" ]]; then
+    echo "  ✗ ClawShell 源码目录未找到"
+    PREFLIGHT_ERRORS+=("无法定位 ClawShell 源码目录，请使用 --src 指定: sudo $0 --src /mnt/c/Users/你的用户名/ClawShell")
+else
+    echo "  ✓ 源码目录: $CLAWSHELL_SRC"
+
+    # 检查源码目录中的关键文件
+    SRC_FILES=(
+        "mcp/server/mcp_server.py:MCP Server 入口"
+        "mcp/server/vsock_client.py:VsockClient"
+        "mcp/client/clawshell-gui/SKILL.md:OpenClaw Skill 定义"
+    )
+
+    for entry in "${SRC_FILES[@]}"; do
+        IFS=: read -r fpath desc <<< "$entry"
+        if [[ -f "$CLAWSHELL_SRC/$fpath" ]]; then
+            echo "  ✓ $fpath"
+        else
+            echo "  ✗ $fpath — $desc"
+            PREFLIGHT_ERRORS+=("源码文件缺失: $CLAWSHELL_SRC/$fpath ($desc)")
+        fi
+    done
+fi
+
+# ── 4. 磁盘空间检查 ──────────────────────────────────────────────────────
+
+# rootfs 在 /tmp，checkpoint 在 /var/cache，分别检查
+check_disk_space() {
+    local path=$1
+    local need_gb=$2
+    local label=$3
+    local avail_kb
+    avail_kb=$(df --output=avail "$path" 2>/dev/null | tail -1)
+    if [[ -n "$avail_kb" ]]; then
+        local avail_gb=$(( avail_kb / 1024 / 1024 ))
+        if [[ $avail_gb -lt $need_gb ]]; then
+            echo "  ⚠ $label: ${avail_gb}GB 可用，建议至少 ${need_gb}GB"
+            PREFLIGHT_WARNINGS+=("$label 磁盘空间不足: 可用 ${avail_gb}GB, 建议 ${need_gb}GB")
+        else
+            echo "  ✓ $label: ${avail_gb}GB 可用"
+        fi
+    fi
+}
+
+check_disk_space "/tmp" 3 "rootfs 工作区 (/tmp)"
+check_disk_space "$CACHE_DIR" 4 "checkpoint 缓存 ($CACHE_DIR)"
+
+# ── 5. 网络连通性（仅警告） ──────────────────────────────────────────────
+
+if curl -sf --max-time 5 -o /dev/null "$MIRROR/dists/$SUITE/Release" 2>/dev/null; then
+    echo "  ✓ 网络: Debian 镜像可达"
+elif wget -q --timeout=5 --spider "$MIRROR/dists/$SUITE/Release" 2>/dev/null; then
+    echo "  ✓ 网络: Debian 镜像可达"
+else
+    echo "  ⚠ 网络: 无法连接 Debian 镜像 ($MIRROR)"
+    if [[ -f "$DEB_TARBALL" ]]; then
+        echo "    (已有本地 debootstrap 缓存，stage 1 可离线安装)"
+    else
+        PREFLIGHT_WARNINGS+=("网络不可用且无本地缓存，stage 1 将无法下载 deb 包")
+    fi
+fi
+
+# ── Preflight 结果 ───────────────────────────────────────────────────────
+
+echo ""
+
+if [[ ${#PREFLIGHT_WARNINGS[@]} -gt 0 ]]; then
+    echo "⚠ 警告 (${#PREFLIGHT_WARNINGS[@]}):"
+    for w in "${PREFLIGHT_WARNINGS[@]}"; do
+        echo "  - $w"
+    done
+    echo ""
+fi
+
+if [[ ${#PREFLIGHT_ERRORS[@]} -gt 0 ]]; then
+    echo "✗ 发现 ${#PREFLIGHT_ERRORS[@]} 个错误，无法继续：" >&2
+    for e in "${PREFLIGHT_ERRORS[@]}"; do
+        echo "  - $e" >&2
+    done
     echo "" >&2
-    echo "请使用 --src 指定源码路径，例如：" >&2
-    echo "  sudo $0 --src /mnt/c/Users/你的用户名/ClawShell" >&2
-    echo "" >&2
-    echo "源码目录应包含 mcp/server/mcp_server.py" >&2
     exit 1
 fi
 
-echo "ClawShell 源码目录: $CLAWSHELL_SRC"
+echo "✓ Preflight 通过"
+echo ""
+
+mkdir -p "$CACHE_DIR" "$APT_CACHE_DIR"
 
 # ── checkpoint 工具函数 ──────────────────────────────────────────────────
 
@@ -239,25 +403,6 @@ mount_apt_cache() {
 umount_apt_cache() {
     umount "$ROOTFS_DIR/var/cache/apt/archives" 2>/dev/null || true
 }
-
-# ── --list 模式 ──────────────────────────────────────────────────────────
-
-if $LIST_ONLY; then
-    list_checkpoints
-    exit 0
-fi
-
-# ── --purge-cache 模式 ───────────────────────────────────────────────────
-
-if $PURGE_CACHE; then
-    echo "清除下载缓存 ..."
-    rm -f "$DEB_TARBALL"
-    rm -rf "$APT_CACHE_DIR"
-    mkdir -p "$APT_CACHE_DIR"
-    echo "下载缓存已清除。"
-    echo "(checkpoint 未清除，如需清除请加 --clean)"
-    exit 0
-fi
 
 # ── --clean 模式 ─────────────────────────────────────────────────────────
 
