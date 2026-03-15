@@ -59,7 +59,6 @@ show_help() {
 构建选项:
   --src DIR            指定 ClawShell 源码目录（含 mcp/、scripts/）
                        默认自动检测脚本所在位置或 /mnt/c/Users/*/ClawShell
-  --from N             从阶段 N 开始重新构建（1-7）
   -o, --output FILE    指定输出文件路径（默认: 当前目录/clawshell-rootfs.tar.gz）
 
 构建阶段:
@@ -79,7 +78,6 @@ show_help() {
 示例:
   sudo ./build-rootfs.sh                                    # 构建（断点续建）
   sudo ./build-rootfs.sh --src /mnt/c/Users/me/ClawShell    # 指定源码目录
-  sudo ./build-rootfs.sh --from 5                           # 从阶段 5 重来
   sudo ./build-rootfs.sh -o /mnt/c/rootfs.tar.gz            # 指定输出路径
   sudo ./build-rootfs.sh --rebuild                          # 全部重来
   sudo ./build-rootfs.sh --clean                            # 清除缓存
@@ -90,7 +88,6 @@ HELP
 # ── 参数解析 ──────────────────────────────────────────────────────────────
 
 ACTION="build"       # build | rebuild | clean | list | help
-FROM_STAGE=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -112,10 +109,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --src)
             CLAWSHELL_SRC="$2"
-            shift 2
-            ;;
-        --from)
-            FROM_STAGE="$2"
             shift 2
             ;;
         -o|--output)
@@ -433,36 +426,9 @@ if [[ "$ACTION" == "rebuild" ]]; then
     echo ""
 fi
 
-# ── --from N 模式 ────────────────────────────────────────────────────────
-
-if [[ $FROM_STAGE -gt 0 ]]; then
-    local_ckpt=$(get_checkpoint_stage)
-    if [[ $FROM_STAGE -le $local_ckpt ]]; then
-        # 有更早的 checkpoint 可以恢复到 FROM_STAGE-1
-        # 但我们只保留一个 checkpoint，所以如果 FROM_STAGE > checkpoint_stage+1 就没法跳
-        # 如果 FROM_STAGE <= checkpoint_stage，需要把 checkpoint 降级
-        echo "从阶段 $FROM_STAGE 开始重建 ..."
-        if [[ $FROM_STAGE -eq 1 ]]; then
-            clean_checkpoint
-        else
-            # checkpoint 在 FROM_STAGE 之前的某个 stage，保留它
-            # 但如果 checkpoint_stage >= FROM_STAGE，需要清除让它重建
-            clean_checkpoint
-        fi
-    else
-        echo "从阶段 $FROM_STAGE 开始（checkpoint 在 stage $local_ckpt，将从那里恢复）..."
-    fi
-fi
-
 # ── 确定从哪个阶段开始 ──────────────────────────────────────────────────
 
 LAST_COMPLETED=$(get_checkpoint_stage)
-
-if [[ $FROM_STAGE -gt 0 && $FROM_STAGE -le $LAST_COMPLETED ]]; then
-    # --from 指定的阶段比 checkpoint 早，需要清除 checkpoint
-    clean_checkpoint
-    LAST_COMPLETED=0
-fi
 
 if [[ $LAST_COMPLETED -gt 0 && $LAST_COMPLETED -lt $TOTAL_STAGES ]]; then
     echo "════════════════════════════════════════"
@@ -473,7 +439,7 @@ if [[ $LAST_COMPLETED -gt 0 && $LAST_COMPLETED -lt $TOTAL_STAGES ]]; then
     RESUME_FROM=$((LAST_COMPLETED + 1))
 elif [[ $LAST_COMPLETED -ge $TOTAL_STAGES ]]; then
     echo "所有阶段已完成，直接打包。"
-    echo "如需重新构建，使用 --rebuild 或 --from N"
+    echo "如需重新构建，使用 --rebuild"
     restore_checkpoint
     RESUME_FROM=$((TOTAL_STAGES + 1))
 else
