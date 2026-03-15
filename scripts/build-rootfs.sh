@@ -1,35 +1,17 @@
 #!/usr/bin/env bash
-# build-rootfs.sh — 在 WSL2 内构建 ClawShell VM rootfs（支持断点续建 + 下载缓存）
+# build-rootfs.sh — ClawShell VM rootfs 构建工具
 #
-# 用法：sudo ./build-rootfs.sh [选项] [输出文件]
+# 在 WSL2 内构建 Debian bookworm rootfs，预装 OpenClaw + ClawShell MCP Server。
+# 生成的 tar.gz 可直接用于 wsl --import。
 #
-#   选项：
-#     --src DIR      ClawShell 源码目录（含 mcp/、scripts/ 等）
-#     --clean        清除所有 checkpoint，完全重新构建
-#     --from N       从阶段 N 开始（丢弃 N 及之后的 checkpoint）
-#     --list         列出已有 checkpoint 状态
-#     --purge-cache  清除下载缓存（deb 包、debootstrap tarball）
+# 支持断点续建：每个阶段完成后保存 checkpoint（仅保留最近一个），
+# 构建中断后重跑自动从上次完成的位置继续。构建成功后自动清除 checkpoint。
 #
-#   示例：
-#     sudo ./build-rootfs.sh                    # 自动断点续建
-#     sudo ./build-rootfs.sh --src /mnt/c/Users/me/ClawShell  # 指定源码目录
-#     sudo ./build-rootfs.sh --clean            # 全新构建（保留下载缓存）
-#     sudo ./build-rootfs.sh --from 5           # 从阶段 5 重新开始
-#     sudo ./build-rootfs.sh --list             # 查看哪些阶段已完成
-#     sudo ./build-rootfs.sh --purge-cache      # 清除下载缓存
-#
-# 网络不稳定？放心：
-#   - debootstrap 的 deb 包会先下载到本地缓存，断了重跑自动续传
-#   - apt-get install 的 deb 包也有持久缓存，不会重复下载
-#   - 每个阶段完成后保存 checkpoint，下次跑直接跳过
-#
-# 需要在现有 WSL2 distro 中以 root 运行。
-# 生成的 tar.gz 可直接用于 wsl --import：
-#   wsl --import ClawShell C:\ClawShell\vm clawshell-rootfs.tar.gz
-#
-# 依赖：debootstrap, tar, gzip (apt install debootstrap)
+# 依赖：debootstrap, tar, gzip（preflight 阶段会自动检查并安装）
 
 set -euo pipefail
+
+VERSION="1.0.0"
 
 # ── 配置 ─────────────────────────────────────────────────────────────────
 
@@ -41,51 +23,107 @@ NODE_MAJOR=22
 CLAWSHELL_USER="clawshell"
 MCP_INSTALL_DIR="/opt/clawshell/mcp"
 
-# 持久缓存目录（不在 /tmp 下，重启后仍保留）
+# 持久缓存目录
 CACHE_DIR="/var/cache/clawshell-build"
-APT_CACHE_DIR="$CACHE_DIR/apt-archives"       # deb 包持久缓存
-DEB_TARBALL="$CACHE_DIR/debootstrap-debs.tar"  # debootstrap 预下载 tarball
+APT_CACHE_DIR="$CACHE_DIR/apt-archives"
+DEB_TARBALL="$CACHE_DIR/debootstrap-debs.tar"
 
-# debootstrap 的 --include 包列表（下载和安装都要用，提取为变量）
+# checkpoint：只保留一个
+CHECKPOINT_FILE="$CACHE_DIR/checkpoint.tar.gz"
+CHECKPOINT_STAGE_FILE="$CACHE_DIR/checkpoint.stage"
+
+# debootstrap --include
 DEBOOTSTRAP_INCLUDE="systemd,systemd-sysv,dbus,ca-certificates,curl,wget,gnupg,git,locales,procps,iproute2,iputils-ping,less,vim-tiny,sudo"
 
-# ClawShell 源码目录（默认从脚本位置推导，可通过 --src 覆盖）
+# ClawShell 源码目录
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CLAWSHELL_SRC=""  # 由参数解析或自动检测填充
+CLAWSHELL_SRC=""
 
 TOTAL_STAGES=7
 
+# ── 帮助信息 ─────────────────────────────────────────────────────────────
+
+show_help() {
+    cat <<'HELP'
+用法: sudo ./build-rootfs.sh [命令] [选项]
+
+构建 ClawShell VM rootfs（Debian bookworm + OpenClaw + MCP Server）。
+
+命令（互斥，默认为构建）:
+  (无)                 构建 rootfs（支持断点续建）
+  --rebuild            清除所有缓存，完全重新构建
+  --clean              清除构建缓存（checkpoint + 下载缓存），不构建
+  --list               查看缓存状态，不构建
+  --help               显示此帮助信息
+
+构建选项:
+  --src DIR            指定 ClawShell 源码目录（含 mcp/、scripts/）
+                       默认自动检测脚本所在位置或 /mnt/c/Users/*/ClawShell
+  --from N             从阶段 N 开始重新构建（1-7）
+  -o, --output FILE    指定输出文件路径（默认: 当前目录/clawshell-rootfs.tar.gz）
+
+构建阶段:
+  1  debootstrap       创建 Debian 基础系统（预下载 deb 包，离线安装）
+  2  基础配置          apt 源、locale、hostname
+  3  Python 3          python3 + pip + venv
+  4  Node.js + pnpm    Node.js 22 + corepack + pnpm
+  5  OpenClaw          pnpm 全局安装 openclaw
+  6  ClawShell MCP     部署 MCP Server + OpenClaw skill + 用户配置
+  7  瘦身              清理缓存、文档、日志
+
+断点续建:
+  每个阶段完成后保存 checkpoint（仅保留最近一个，节省磁盘）。
+  构建中断后重跑自动从上次位置继续。构建成功后自动清除 checkpoint。
+  网络不稳定时 debootstrap 包和 apt 包都有本地缓存，不会重复下载。
+
+示例:
+  sudo ./build-rootfs.sh                                    # 构建（断点续建）
+  sudo ./build-rootfs.sh --src /mnt/c/Users/me/ClawShell    # 指定源码目录
+  sudo ./build-rootfs.sh --from 5                           # 从阶段 5 重来
+  sudo ./build-rootfs.sh -o /mnt/c/rootfs.tar.gz            # 指定输出路径
+  sudo ./build-rootfs.sh --rebuild                          # 全部重来
+  sudo ./build-rootfs.sh --clean                            # 清除缓存
+  sudo ./build-rootfs.sh --list                             # 查看状态
+HELP
+}
+
 # ── 参数解析 ──────────────────────────────────────────────────────────────
 
-CLEAN=false
+ACTION="build"       # build | rebuild | clean | list | help
 FROM_STAGE=0
-LIST_ONLY=false
-PURGE_CACHE=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --help|-h)
+            ACTION="help"
+            shift
+            ;;
+        --rebuild)
+            ACTION="rebuild"
+            shift
+            ;;
+        --clean)
+            ACTION="clean"
+            shift
+            ;;
+        --list)
+            ACTION="list"
+            shift
+            ;;
         --src)
             CLAWSHELL_SRC="$2"
             shift 2
-            ;;
-        --clean)
-            CLEAN=true
-            shift
             ;;
         --from)
             FROM_STAGE="$2"
             shift 2
             ;;
-        --list)
-            LIST_ONLY=true
-            shift
-            ;;
-        --purge-cache)
-            PURGE_CACHE=true
-            shift
+        -o|--output)
+            OUTPUT="$(cd "$(dirname "$2")" 2>/dev/null && pwd)/$(basename "$2")"
+            shift 2
             ;;
         -*)
-            echo "未知选项: $1" >&2
+            echo "未知选项: $1（使用 --help 查看用法）" >&2
             exit 1
             ;;
         *)
@@ -95,34 +133,113 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# ── 快速模式（不需要 preflight 的操作）────────────────────────────────────
+# ── --help ───────────────────────────────────────────────────────────────
 
-# --list 只读缓存状态，不需要完整检查
-if $LIST_ONLY; then
-    mkdir -p "$CACHE_DIR" "$APT_CACHE_DIR"
-    list_checkpoints
+if [[ "$ACTION" == "help" ]]; then
+    show_help
     exit 0
 fi
 
-# --purge-cache 只清缓存，不需要完整检查
-if $PURGE_CACHE; then
-    echo "清除下载缓存 ..."
+# ── checkpoint 工具函数 ──────────────────────────────────────────────────
+
+save_checkpoint() {
+    local stage=$1
+    echo "  ✓ 保存 checkpoint (stage $stage) ..."
+    # 先写临时文件，成功后原子替换
+    tar -czf "$CHECKPOINT_FILE.tmp" -C "$ROOTFS_DIR" .
+    mv "$CHECKPOINT_FILE.tmp" "$CHECKPOINT_FILE"
+    echo "$stage" > "$CHECKPOINT_STAGE_FILE"
+    local size
+    size=$(du -sh "$CHECKPOINT_FILE" | cut -f1)
+    echo "  ✓ checkpoint 已保存 (stage $stage, $size)"
+}
+
+restore_checkpoint() {
+    echo "  ↻ 从 checkpoint 恢复 ..."
+    rm -rf "$ROOTFS_DIR"
+    mkdir -p "$ROOTFS_DIR"
+    tar -xzf "$CHECKPOINT_FILE" -C "$ROOTFS_DIR"
+    echo "  ✓ 恢复完成"
+}
+
+get_checkpoint_stage() {
+    if [[ -f "$CHECKPOINT_FILE" && -f "$CHECKPOINT_STAGE_FILE" ]]; then
+        cat "$CHECKPOINT_STAGE_FILE"
+    else
+        echo 0
+    fi
+}
+
+clean_checkpoint() {
+    rm -f "$CHECKPOINT_FILE" "$CHECKPOINT_FILE.tmp" "$CHECKPOINT_STAGE_FILE"
+}
+
+clean_download_cache() {
     rm -f "$DEB_TARBALL"
     rm -rf "$APT_CACHE_DIR"
     mkdir -p "$APT_CACHE_DIR"
-    echo "下载缓存已清除。"
-    echo "(checkpoint 未清除，如需清除请加 --clean)"
+}
+
+show_status() {
+    echo ""
+    echo "ClawShell rootfs 构建状态"
+    echo "────────────────────────────────────────"
+
+    # checkpoint
+    local ckpt_stage
+    ckpt_stage=$(get_checkpoint_stage)
+    if [[ $ckpt_stage -gt 0 ]]; then
+        local size ts
+        size=$(du -sh "$CHECKPOINT_FILE" | cut -f1)
+        ts=$(date -r "$CHECKPOINT_FILE" '+%Y-%m-%d %H:%M:%S')
+        echo "  checkpoint:  stage $ckpt_stage/$TOTAL_STAGES  $size  $ts"
+        echo "               下次构建从 stage $((ckpt_stage + 1)) 继续"
+    else
+        echo "  checkpoint:  无（从头构建）"
+    fi
+
+    # 下载缓存
+    echo ""
+    if [[ -f "$DEB_TARBALL" ]]; then
+        printf "  debootstrap: %s\n" "$(du -sh "$DEB_TARBALL" | cut -f1)"
+    else
+        echo "  debootstrap: 未缓存"
+    fi
+
+    local apt_count
+    apt_count=$(find "$APT_CACHE_DIR" -name '*.deb' 2>/dev/null | wc -l)
+    if [[ $apt_count -gt 0 ]]; then
+        printf "  apt 缓存:    %s (%d 个 deb)\n" "$(du -sh "$APT_CACHE_DIR" | cut -f1)" "$apt_count"
+    else
+        echo "  apt 缓存:    空"
+    fi
+
+    echo ""
+    echo "  缓存目录:    $CACHE_DIR"
+    echo "  总占用:      $(du -sh "$CACHE_DIR" 2>/dev/null | cut -f1)"
+    echo ""
+}
+
+# ── --list ───────────────────────────────────────────────────────────────
+
+if [[ "$ACTION" == "list" ]]; then
+    mkdir -p "$CACHE_DIR" "$APT_CACHE_DIR"
+    show_status
+    exit 0
+fi
+
+# ── --clean ──────────────────────────────────────────────────────────────
+
+if [[ "$ACTION" == "clean" ]]; then
+    echo "清除所有构建缓存 ..."
+    clean_checkpoint
+    clean_download_cache
+    rm -rf "$ROOTFS_DIR"
+    echo "✓ 已清除：checkpoint、下载缓存、临时 rootfs"
     exit 0
 fi
 
 # ── 前置检查（Preflight） ─────────────────────────────────────────────────
-#
-# 在真正开始构建之前，统一检查所有依赖项：
-#   1. 运行权限（root）
-#   2. 宿主机必备工具
-#   3. ClawShell 源码目录及关键文件
-#   4. 磁盘空间
-# 检查失败会一次性列出所有问题，而不是跑到一半才报错。
 
 echo ""
 echo "══════════════════════════════════════════"
@@ -133,8 +250,7 @@ echo ""
 PREFLIGHT_ERRORS=()
 PREFLIGHT_WARNINGS=()
 
-# ── 1. 权限检查 ──────────────────────────────────────────────────────────
-
+# 1. 权限
 if [[ $EUID -ne 0 ]]; then
     echo "  ✗ 需要 root 权限" >&2
     echo "" >&2
@@ -143,14 +259,12 @@ if [[ $EUID -ne 0 ]]; then
 fi
 echo "  ✓ root 权限"
 
-# ── 2. 宿主机工具检查 ────────────────────────────────────────────────────
-
-# 必备工具：不可缺少，构建无法继续
+# 2. 宿主机工具
 REQUIRED_TOOLS=(
     "debootstrap:创建 Debian 基础系统:debootstrap"
-    "tar:打包/解包 rootfs 和 checkpoint:tar"
-    "gzip:压缩/解压 tarball:gzip"
-    "mount:挂载虚拟文件系统到 chroot:mount"
+    "tar:打包/解包 rootfs:tar"
+    "gzip:压缩/解压:gzip"
+    "mount:挂载虚拟文件系统:mount"
     "umount:卸载虚拟文件系统:umount"
     "chroot:在 rootfs 内执行命令:coreutils"
 )
@@ -169,17 +283,11 @@ for entry in "${REQUIRED_TOOLS[@]}"; do
     fi
 done
 
-# 尝试自动安装缺失的工具
 if [[ ${#MISSING_TOOLS[@]} -gt 0 ]]; then
     echo ""
-    echo "  缺少 ${#MISSING_TOOLS[@]} 个工具，尝试自动安装: ${AUTO_INSTALL_PKGS[*]}"
-
-    # 去重
+    echo "  缺少 ${#MISSING_TOOLS[@]} 个工具，尝试自动安装 ..."
     UNIQUE_PKGS=($(printf '%s\n' "${AUTO_INSTALL_PKGS[@]}" | sort -u))
-
     if apt-get update -qq 2>/dev/null && apt-get install -y -qq "${UNIQUE_PKGS[@]}" 2>/dev/null; then
-        echo ""
-        # 重新验证
         STILL_MISSING=()
         for cmd in "${MISSING_TOOLS[@]}"; do
             if command -v "$cmd" &>/dev/null; then
@@ -188,31 +296,24 @@ if [[ ${#MISSING_TOOLS[@]} -gt 0 ]]; then
                 STILL_MISSING+=("$cmd")
             fi
         done
-
         if [[ ${#STILL_MISSING[@]} -gt 0 ]]; then
             PREFLIGHT_ERRORS+=("以下工具安装失败: ${STILL_MISSING[*]}")
         fi
     else
-        PREFLIGHT_ERRORS+=("自动安装失败，请手动安装: apt-get install ${UNIQUE_PKGS[*]}")
+        PREFLIGHT_ERRORS+=("自动安装失败，请手动执行: apt-get install ${UNIQUE_PKGS[*]}")
     fi
 fi
 
-# ── 3. ClawShell 源码目录检查 ────────────────────────────────────────────
-
+# 3. ClawShell 源码目录
 if [[ -z "$CLAWSHELL_SRC" ]]; then
-    # 自动检测：脚本所在目录的上级
     _auto="$(dirname "$SCRIPT_DIR")"
     if [[ -f "$_auto/mcp/server/mcp_server.py" ]]; then
         CLAWSHELL_SRC="$_auto"
     fi
 fi
 
-# 如果自动检测失败，尝试常见的 Windows 挂载路径
 if [[ -z "$CLAWSHELL_SRC" || ! -f "$CLAWSHELL_SRC/mcp/server/mcp_server.py" ]]; then
-    for _try in \
-        /mnt/c/Users/*/ClawShell \
-        /mnt/d/ClawShell \
-        /mnt/c/ClawShell; do
+    for _try in /mnt/c/Users/*/ClawShell /mnt/d/ClawShell /mnt/c/ClawShell; do
         # shellcheck disable=SC2086
         for _dir in $_try; do
             if [[ -f "$_dir/mcp/server/mcp_server.py" ]]; then
@@ -225,83 +326,63 @@ fi
 
 if [[ -z "$CLAWSHELL_SRC" || ! -d "$CLAWSHELL_SRC" ]]; then
     echo "  ✗ ClawShell 源码目录未找到"
-    PREFLIGHT_ERRORS+=("无法定位 ClawShell 源码目录，请使用 --src 指定: sudo $0 --src /mnt/c/Users/你的用户名/ClawShell")
+    PREFLIGHT_ERRORS+=("请用 --src 指定源码目录: sudo $0 --src /mnt/c/Users/你的用户名/ClawShell")
 else
     echo "  ✓ 源码目录: $CLAWSHELL_SRC"
-
-    # 检查源码目录中的关键文件
-    SRC_FILES=(
-        "mcp/server/mcp_server.py:MCP Server 入口"
-        "mcp/server/vsock_client.py:VsockClient"
-        "mcp/client/clawshell-gui/SKILL.md:OpenClaw Skill 定义"
-    )
-
-    for entry in "${SRC_FILES[@]}"; do
-        IFS=: read -r fpath desc <<< "$entry"
-        if [[ -f "$CLAWSHELL_SRC/$fpath" ]]; then
-            echo "  ✓ $fpath"
+    for _sf in mcp/server/mcp_server.py mcp/server/vsock_client.py mcp/client/clawshell-gui/SKILL.md; do
+        if [[ -f "$CLAWSHELL_SRC/$_sf" ]]; then
+            echo "  ✓ $_sf"
         else
-            echo "  ✗ $fpath — $desc"
-            PREFLIGHT_ERRORS+=("源码文件缺失: $CLAWSHELL_SRC/$fpath ($desc)")
+            echo "  ✗ $_sf"
+            PREFLIGHT_ERRORS+=("源码文件缺失: $CLAWSHELL_SRC/$_sf")
         fi
     done
 fi
 
-# ── 4. 磁盘空间检查 ──────────────────────────────────────────────────────
-
-# rootfs 在 /tmp，checkpoint 在 /var/cache，分别检查
+# 4. 磁盘空间
 check_disk_space() {
-    local path=$1
-    local need_gb=$2
-    local label=$3
+    local path=$1 need_gb=$2 label=$3
     local avail_kb
     avail_kb=$(df --output=avail "$path" 2>/dev/null | tail -1)
     if [[ -n "$avail_kb" ]]; then
         local avail_gb=$(( avail_kb / 1024 / 1024 ))
         if [[ $avail_gb -lt $need_gb ]]; then
-            echo "  ⚠ $label: ${avail_gb}GB 可用，建议至少 ${need_gb}GB"
-            PREFLIGHT_WARNINGS+=("$label 磁盘空间不足: 可用 ${avail_gb}GB, 建议 ${need_gb}GB")
+            echo "  ⚠ $label: ${avail_gb}GB 可用，建议 ${need_gb}GB"
+            PREFLIGHT_WARNINGS+=("$label: ${avail_gb}GB 可用, 建议 ${need_gb}GB")
         else
             echo "  ✓ $label: ${avail_gb}GB 可用"
         fi
     fi
 }
 
-check_disk_space "/tmp" 3 "rootfs 工作区 (/tmp)"
-check_disk_space "$CACHE_DIR" 4 "checkpoint 缓存 ($CACHE_DIR)"
+check_disk_space "/tmp" 3 "/tmp"
+check_disk_space "$CACHE_DIR" 2 "$CACHE_DIR"
 
-# ── 5. 网络连通性（仅警告） ──────────────────────────────────────────────
-
+# 5. 网络
 if curl -sf --max-time 5 -o /dev/null "$MIRROR/dists/$SUITE/Release" 2>/dev/null; then
-    echo "  ✓ 网络: Debian 镜像可达"
+    echo "  ✓ 网络可达"
 elif wget -q --timeout=5 --spider "$MIRROR/dists/$SUITE/Release" 2>/dev/null; then
-    echo "  ✓ 网络: Debian 镜像可达"
+    echo "  ✓ 网络可达"
 else
-    echo "  ⚠ 网络: 无法连接 Debian 镜像 ($MIRROR)"
+    echo "  ⚠ 无法连接 Debian 镜像"
     if [[ -f "$DEB_TARBALL" ]]; then
-        echo "    (已有本地 debootstrap 缓存，stage 1 可离线安装)"
+        echo "    (已有本地缓存，stage 1 可离线)"
     else
-        PREFLIGHT_WARNINGS+=("网络不可用且无本地缓存，stage 1 将无法下载 deb 包")
+        PREFLIGHT_WARNINGS+=("网络不可用且无本地缓存")
     fi
 fi
 
-# ── Preflight 结果 ───────────────────────────────────────────────────────
-
+# 结果
 echo ""
-
 if [[ ${#PREFLIGHT_WARNINGS[@]} -gt 0 ]]; then
-    echo "⚠ 警告 (${#PREFLIGHT_WARNINGS[@]}):"
-    for w in "${PREFLIGHT_WARNINGS[@]}"; do
-        echo "  - $w"
-    done
+    echo "⚠ 警告:"
+    for w in "${PREFLIGHT_WARNINGS[@]}"; do echo "  - $w"; done
     echo ""
 fi
 
 if [[ ${#PREFLIGHT_ERRORS[@]} -gt 0 ]]; then
-    echo "✗ 发现 ${#PREFLIGHT_ERRORS[@]} 个错误，无法继续：" >&2
-    for e in "${PREFLIGHT_ERRORS[@]}"; do
-        echo "  - $e" >&2
-    done
+    echo "✗ 无法继续:" >&2
+    for e in "${PREFLIGHT_ERRORS[@]}"; do echo "  - $e" >&2; done
     echo "" >&2
     exit 1
 fi
@@ -311,90 +392,8 @@ echo ""
 
 mkdir -p "$CACHE_DIR" "$APT_CACHE_DIR"
 
-# ── checkpoint 工具函数 ──────────────────────────────────────────────────
-
-checkpoint_file() {
-    echo "$CACHE_DIR/stage${1}.tar.gz"
-}
-
-has_checkpoint() {
-    [[ -f "$(checkpoint_file "$1")" ]]
-}
-
-save_checkpoint() {
-    local stage=$1
-    echo "  ✓ 保存 checkpoint: stage $stage ..."
-    # 先保存到临时文件，成功后再重命名（避免写一半断电/kill 导致损坏）
-    tar -czf "$(checkpoint_file "$stage").tmp" -C "$ROOTFS_DIR" .
-    mv "$(checkpoint_file "$stage").tmp" "$(checkpoint_file "$stage")"
-    local size
-    size=$(du -sh "$(checkpoint_file "$stage")" | cut -f1)
-    echo "  ✓ checkpoint stage $stage 已保存 ($size)"
-}
-
-restore_checkpoint() {
-    local stage=$1
-    local ckpt
-    ckpt="$(checkpoint_file "$stage")"
-    echo "  ↻ 从 checkpoint stage $stage 恢复 ..."
-    rm -rf "$ROOTFS_DIR"
-    mkdir -p "$ROOTFS_DIR"
-    tar -xzf "$ckpt" -C "$ROOTFS_DIR"
-    echo "  ✓ 恢复完成"
-}
-
-list_checkpoints() {
-    echo ""
-    echo "ClawShell rootfs 构建状态："
-    echo "────────────────────────────────────────"
-
-    # checkpoint 状态
-    echo ""
-    echo "  阶段 checkpoint："
-    local stage
-    for stage in $(seq 1 $TOTAL_STAGES); do
-        local ckpt
-        ckpt="$(checkpoint_file "$stage")"
-        if [[ -f "$ckpt" ]]; then
-            local size ts
-            size=$(du -sh "$ckpt" | cut -f1)
-            ts=$(date -r "$ckpt" '+%Y-%m-%d %H:%M:%S')
-            printf "    ✅ stage %d  %6s  %s\n" "$stage" "$size" "$ts"
-        else
-            printf "    ⬜ stage %d  (未构建)\n" "$stage"
-        fi
-    done
-
-    # 下载缓存状态
-    echo ""
-    echo "  下载缓存："
-    if [[ -f "$DEB_TARBALL" ]]; then
-        local deb_size
-        deb_size=$(du -sh "$DEB_TARBALL" | cut -f1)
-        printf "    📦 debootstrap tarball  %s\n" "$deb_size"
-    else
-        printf "    ⬜ debootstrap tarball  (未下载)\n"
-    fi
-
-    local apt_count
-    apt_count=$(find "$APT_CACHE_DIR" -name '*.deb' 2>/dev/null | wc -l)
-    if [[ $apt_count -gt 0 ]]; then
-        local apt_size
-        apt_size=$(du -sh "$APT_CACHE_DIR" | cut -f1)
-        printf "    📦 apt deb 缓存        %s (%d 个包)\n" "$apt_size" "$apt_count"
-    else
-        printf "    ⬜ apt deb 缓存        (空)\n"
-    fi
-
-    echo ""
-    echo "  缓存目录: $CACHE_DIR"
-    echo "  总大小: $(du -sh "$CACHE_DIR" | cut -f1)"
-    echo ""
-}
-
 # ── apt 缓存 helper ──────────────────────────────────────────────────────
 
-# 将持久缓存目录 bind-mount 到 chroot 内的 apt archives
 mount_apt_cache() {
     mkdir -p "$ROOTFS_DIR/var/cache/apt/archives/partial"
     mount --bind "$APT_CACHE_DIR" "$ROOTFS_DIR/var/cache/apt/archives"
@@ -403,59 +402,6 @@ mount_apt_cache() {
 umount_apt_cache() {
     umount "$ROOTFS_DIR/var/cache/apt/archives" 2>/dev/null || true
 }
-
-# ── --clean 模式 ─────────────────────────────────────────────────────────
-
-if $CLEAN; then
-    echo "清除所有 checkpoint ..."
-    rm -f "$CACHE_DIR"/stage*.tar.gz
-    rm -f "$CACHE_DIR"/stage*.tar.gz.tmp
-    echo "(下载缓存保留，如需清除请用 --purge-cache)"
-fi
-
-# ── --from N 模式 ────────────────────────────────────────────────────────
-
-if [[ $FROM_STAGE -gt 0 ]]; then
-    echo "从阶段 $FROM_STAGE 开始，删除 stage $FROM_STAGE 及之后的 checkpoint ..."
-    for s in $(seq "$FROM_STAGE" $TOTAL_STAGES); do
-        rm -f "$(checkpoint_file "$s")" "$(checkpoint_file "$s").tmp"
-    done
-fi
-
-# ── 确定从哪个阶段开始 ──────────────────────────────────────────────────
-
-find_resume_stage() {
-    local last=0
-    for s in $(seq 1 $TOTAL_STAGES); do
-        if has_checkpoint "$s"; then
-            last=$s
-        else
-            break
-        fi
-    done
-    echo $last
-}
-
-LAST_COMPLETED=$(find_resume_stage)
-
-if [[ $LAST_COMPLETED -ge $TOTAL_STAGES ]]; then
-    echo "所有阶段已完成，直接打包。"
-    echo "如需重新构建，使用 --clean 或 --from N"
-    restore_checkpoint $TOTAL_STAGES
-    RESUME_FROM=$((TOTAL_STAGES + 1))
-elif [[ $LAST_COMPLETED -gt 0 ]]; then
-    echo ""
-    echo "════════════════════════════════════════"
-    echo " 检测到 checkpoint，从 stage $((LAST_COMPLETED + 1)) 继续"
-    echo " (stage 1~$LAST_COMPLETED 已缓存，跳过)"
-    echo "════════════════════════════════════════"
-    echo ""
-    restore_checkpoint $LAST_COMPLETED
-    RESUME_FROM=$((LAST_COMPLETED + 1))
-else
-    echo "无 checkpoint，从头开始构建。"
-    RESUME_FROM=1
-fi
 
 # ── 挂载/卸载 helper ─────────────────────────────────────────────────────
 
@@ -477,13 +423,70 @@ umount_vfs() {
 
 trap umount_vfs EXIT
 
+# ── --rebuild 模式：清除后继续构建 ────────────────────────────────────────
+
+if [[ "$ACTION" == "rebuild" ]]; then
+    echo "清除所有缓存，全新构建 ..."
+    clean_checkpoint
+    clean_download_cache
+    rm -rf "$ROOTFS_DIR"
+    echo ""
+fi
+
+# ── --from N 模式 ────────────────────────────────────────────────────────
+
+if [[ $FROM_STAGE -gt 0 ]]; then
+    local_ckpt=$(get_checkpoint_stage)
+    if [[ $FROM_STAGE -le $local_ckpt ]]; then
+        # 有更早的 checkpoint 可以恢复到 FROM_STAGE-1
+        # 但我们只保留一个 checkpoint，所以如果 FROM_STAGE > checkpoint_stage+1 就没法跳
+        # 如果 FROM_STAGE <= checkpoint_stage，需要把 checkpoint 降级
+        echo "从阶段 $FROM_STAGE 开始重建 ..."
+        if [[ $FROM_STAGE -eq 1 ]]; then
+            clean_checkpoint
+        else
+            # checkpoint 在 FROM_STAGE 之前的某个 stage，保留它
+            # 但如果 checkpoint_stage >= FROM_STAGE，需要清除让它重建
+            clean_checkpoint
+        fi
+    else
+        echo "从阶段 $FROM_STAGE 开始（checkpoint 在 stage $local_ckpt，将从那里恢复）..."
+    fi
+fi
+
+# ── 确定从哪个阶段开始 ──────────────────────────────────────────────────
+
+LAST_COMPLETED=$(get_checkpoint_stage)
+
+if [[ $FROM_STAGE -gt 0 && $FROM_STAGE -le $LAST_COMPLETED ]]; then
+    # --from 指定的阶段比 checkpoint 早，需要清除 checkpoint
+    clean_checkpoint
+    LAST_COMPLETED=0
+fi
+
+if [[ $LAST_COMPLETED -gt 0 && $LAST_COMPLETED -lt $TOTAL_STAGES ]]; then
+    echo "════════════════════════════════════════"
+    echo " 从 stage $((LAST_COMPLETED + 1)) 继续（stage 1~$LAST_COMPLETED 已缓存）"
+    echo "════════════════════════════════════════"
+    echo ""
+    restore_checkpoint
+    RESUME_FROM=$((LAST_COMPLETED + 1))
+elif [[ $LAST_COMPLETED -ge $TOTAL_STAGES ]]; then
+    echo "所有阶段已完成，直接打包。"
+    echo "如需重新构建，使用 --rebuild 或 --from N"
+    restore_checkpoint
+    RESUME_FROM=$((TOTAL_STAGES + 1))
+else
+    echo "从头开始构建 ..."
+    RESUME_FROM=1
+fi
+
 # ── 运行阶段 helper ──────────────────────────────────────────────────────
 
 run_stage() {
-    local stage=$1
-    local name=$2
+    local stage=$1 name=$2
     if [[ $RESUME_FROM -gt $stage ]]; then
-        echo "=== [${stage}/${TOTAL_STAGES}] ${name} === (已缓存，跳过)"
+        echo "=== [${stage}/${TOTAL_STAGES}] ${name} === (跳过)"
         return 0
     fi
     echo ""
@@ -492,24 +495,15 @@ run_stage() {
     return 1
 }
 
-# ── 阶段 1：debootstrap（分下载+安装两步） ────────────────────────────────
+# ── 阶段 1：debootstrap ──────────────────────────────────────────────────
 
-if ! run_stage 1 "debootstrap：创建 Debian $SUITE 基础系统"; then
+if ! run_stage 1 "debootstrap：Debian $SUITE 基础系统"; then
 
-    # ── 1a：预下载所有 deb 包到本地 tarball ──────────────────────────────
-    #
-    # debootstrap --make-tarball 只下载不安装，生成的 tarball 可重复使用。
-    # 如果 tarball 已存在（上次下载成功），直接跳过。
-    # 如果下载中断了，tarball 不存在，重跑会重新下载。
-
+    # 1a：预下载
     if [[ -f "$DEB_TARBALL" ]]; then
-        echo "  ✓ debootstrap deb tarball 已存在，跳过下载"
-        echo "    ($DEB_TARBALL, $(du -sh "$DEB_TARBALL" | cut -f1))"
+        echo "  ✓ deb 包已缓存，跳过下载 ($(du -sh "$DEB_TARBALL" | cut -f1))"
     else
-        echo "  ↓ 预下载 debootstrap deb 包 ..."
-        echo "    (下载到 $DEB_TARBALL)"
-
-        # --make-tarball 需要一个临时目标目录，不会真正安装
+        echo "  ↓ 预下载 deb 包 ..."
         DOWNLOAD_TMP="/tmp/clawshell-debootstrap-download"
         rm -rf "$DOWNLOAD_TMP"
         mkdir -p "$DOWNLOAD_TMP"
@@ -521,16 +515,12 @@ if ! run_stage 1 "debootstrap：创建 Debian $SUITE 基础系统"; then
             "$SUITE" "$DOWNLOAD_TMP" "$MIRROR"
 
         rm -rf "$DOWNLOAD_TMP"
-        echo "  ✓ deb 包下载完成 ($(du -sh "$DEB_TARBALL" | cut -f1))"
+        echo "  ✓ 下载完成 ($(du -sh "$DEB_TARBALL" | cut -f1))"
     fi
 
-    # ── 1b：从本地 tarball 离线安装 ──────────────────────────────────────
-
-    echo "  ⚙ 从本地 tarball 安装基础系统（离线，无需网络）..."
-
-    if [[ -d "$ROOTFS_DIR" ]]; then
-        rm -rf "$ROOTFS_DIR"
-    fi
+    # 1b：离线安装
+    echo "  ⚙ 离线安装基础系统 ..."
+    [[ -d "$ROOTFS_DIR" ]] && rm -rf "$ROOTFS_DIR"
 
     debootstrap \
         --unpack-tarball="$DEB_TARBALL" \
@@ -538,15 +528,14 @@ if ! run_stage 1 "debootstrap：创建 Debian $SUITE 基础系统"; then
         --include="$DEBOOTSTRAP_INCLUDE" \
         "$SUITE" "$ROOTFS_DIR"
 
-    echo "基础系统完成：$(du -sh "$ROOTFS_DIR" | cut -f1)"
+    echo "  ✓ 基础系统完成 ($(du -sh "$ROOTFS_DIR" | cut -f1))"
     save_checkpoint 1
 fi
 
-# ── 阶段 2：基础系统配置 ─────────────────────────────────────────────────
+# ── 阶段 2：基础配置 ─────────────────────────────────────────────────────
 
-if ! run_stage 2 "配置基础系统"; then
+if ! run_stage 2 "基础配置"; then
     mount_vfs
-
     cp /etc/resolv.conf "$ROOTFS_DIR/etc/resolv.conf"
 
     cat > "$ROOTFS_DIR/etc/apt/sources.list" <<SOURCES
@@ -555,7 +544,6 @@ deb $MIRROR ${SUITE}-updates main contrib
 deb http://security.debian.org/debian-security ${SUITE}-security main contrib
 SOURCES
 
-    # 配置 apt 自动重试（网络不稳定时自动重试 3 次）
     mkdir -p "$ROOTFS_DIR/etc/apt/apt.conf.d"
     cat > "$ROOTFS_DIR/etc/apt/apt.conf.d/80clawshell-retry" <<'APTCONF'
 Acquire::Retries "3";
@@ -567,16 +555,15 @@ APTCONF
         sed -i 's/# en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen
         locale-gen
     "
-
     echo "clawshell" > "$ROOTFS_DIR/etc/hostname"
 
     umount_vfs
     save_checkpoint 2
 fi
 
-# ── 阶段 3：安装 Python 3 ────────────────────────────────────────────────
+# ── 阶段 3：Python 3 ─────────────────────────────────────────────────────
 
-if ! run_stage 3 "安装 Python 3"; then
+if ! run_stage 3 "Python 3"; then
     mount_vfs
     mount_apt_cache
     cp /etc/resolv.conf "$ROOTFS_DIR/etc/resolv.conf"
@@ -591,15 +578,14 @@ if ! run_stage 3 "安装 Python 3"; then
     save_checkpoint 3
 fi
 
-# ── 阶段 4：安装 Node.js + pnpm ─────────────────────────────────────────
+# ── 阶段 4：Node.js + pnpm ──────────────────────────────────────────────
 
-if ! run_stage 4 "安装 Node.js $NODE_MAJOR + pnpm"; then
+if ! run_stage 4 "Node.js $NODE_MAJOR + pnpm"; then
     mount_vfs
     mount_apt_cache
     cp /etc/resolv.conf "$ROOTFS_DIR/etc/resolv.conf"
 
     chroot "$ROOTFS_DIR" bash -c "
-        # nodesource GPG key + repo
         mkdir -p /etc/apt/keyrings
         curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
             | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
@@ -609,15 +595,12 @@ if ! run_stage 4 "安装 Node.js $NODE_MAJOR + pnpm"; then
         apt-get update -qq
         apt-get install -y -qq nodejs
 
-        # 启用 corepack 获取 pnpm
         corepack enable
         corepack prepare pnpm@latest --activate
 
-        # 配置 pnpm 全局目录
         export PNPM_HOME=/usr/local/share/pnpm
         mkdir -p \$PNPM_HOME
 
-        # 写入系统级 profile
         cat > /etc/profile.d/pnpm.sh <<'PNPMSH'
 export PNPM_HOME=/usr/local/share/pnpm
 export PATH=\$PNPM_HOME:\$PATH
@@ -631,9 +614,9 @@ PNPMSH
     save_checkpoint 4
 fi
 
-# ── 阶段 5：安装 OpenClaw ────────────────────────────────────────────────
+# ── 阶段 5：OpenClaw ─────────────────────────────────────────────────────
 
-if ! run_stage 5 "安装 OpenClaw"; then
+if ! run_stage 5 "OpenClaw"; then
     mount_vfs
     mount_apt_cache
     cp /etc/resolv.conf "$ROOTFS_DIR/etc/resolv.conf"
@@ -642,16 +625,15 @@ if ! run_stage 5 "安装 OpenClaw"; then
         export PNPM_HOME=/usr/local/share/pnpm
         export PATH=\$PNPM_HOME:\$PATH
 
-        # openclaw 的依赖 @whiskeysockets/baileys 需要 git ls-remote
-        # chroot 是隔离环境，即使宿主装了 git 也看不到，必须在里面装
+        # openclaw 依赖需要 git（chroot 隔离，宿主的 git 不可见）
         apt-get update -qq
         apt-get install -y -qq git build-essential python3-dev
 
         pnpm add -g openclaw@latest
 
-        # 严格验证：openclaw 必须安装成功，否则不存 checkpoint
+        # 严格验证
         if ! command -v openclaw &>/dev/null; then
-            echo '错误：openclaw 安装失败，未找到可执行文件' >&2
+            echo '错误：openclaw 安装失败' >&2
             exit 1
         fi
         openclaw --version
@@ -661,28 +643,28 @@ if ! run_stage 5 "安装 OpenClaw"; then
     save_checkpoint 5
 fi
 
-# ── 阶段 6：部署 ClawShell MCP Server ────────────────────────────────────
+# ── 阶段 6：ClawShell MCP Server ─────────────────────────────────────────
 
-if ! run_stage 6 "部署 ClawShell MCP Server"; then
+if ! run_stage 6 "ClawShell MCP Server"; then
     mount_vfs
 
-    # 复制 MCP server 文件
+    # MCP Server
     mkdir -p "$ROOTFS_DIR$MCP_INSTALL_DIR"
     cp "$CLAWSHELL_SRC/mcp/server/vsock_client.py" "$ROOTFS_DIR$MCP_INSTALL_DIR/"
     cp "$CLAWSHELL_SRC/mcp/server/mcp_server.py"   "$ROOTFS_DIR$MCP_INSTALL_DIR/"
 
-    # 复制 OpenClaw skill
+    # OpenClaw skill
     mkdir -p "$ROOTFS_DIR/opt/clawshell/skills/clawshell-gui"
     cp "$CLAWSHELL_SRC/mcp/client/clawshell-gui/SKILL.md" \
        "$ROOTFS_DIR/opt/clawshell/skills/clawshell-gui/"
 
-    # 创建用户
+    # 用户
     chroot "$ROOTFS_DIR" bash -c "
         useradd -m -s /bin/bash -G sudo $CLAWSHELL_USER
         echo '$CLAWSHELL_USER ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/$CLAWSHELL_USER
     "
 
-    # OpenClaw mcpServers 配置
+    # OpenClaw 配置
     OPENCLAW_CONF_DIR="$ROOTFS_DIR/home/$CLAWSHELL_USER/.openclaw"
     mkdir -p "$OPENCLAW_CONF_DIR"
     cat > "$OPENCLAW_CONF_DIR/openclaw.json" <<CONF
@@ -707,7 +689,7 @@ CONF
 
     chroot "$ROOTFS_DIR" chown -R "$CLAWSHELL_USER:$CLAWSHELL_USER" "/home/$CLAWSHELL_USER/.openclaw"
 
-    # WSL 默认用户配置
+    # WSL 配置
     cat > "$ROOTFS_DIR/etc/wsl.conf" <<WSL
 [user]
 default=$CLAWSHELL_USER
@@ -732,63 +714,40 @@ if ! run_stage 7 "清理瘦身"; then
         export PNPM_HOME=/usr/local/share/pnpm
         export PATH=\$PNPM_HOME:\$PATH
 
-        # 清理 apt 缓存（rootfs 内部的，不影响外部持久缓存）
         apt-get clean
         rm -rf /var/lib/apt/lists/*
-
-        # 清理 pip 缓存
         rm -rf /root/.cache/pip /home/$CLAWSHELL_USER/.cache/pip
-
-        # 清理 pnpm store 缓存
         pnpm store prune 2>/dev/null || true
 
-        # 清理文档和 man pages
         rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/*
-        # 删除非英语 locale（保留 en、en_US、locale.alias）
         find /usr/share/locale -mindepth 1 -maxdepth 1 -type d \
             ! -name 'en' ! -name 'en_US' -exec rm -rf {} +
-        rm -f /usr/share/locale/*.alias 2>/dev/null || true
 
-        # 清理日志
         find /var/log -type f -delete
-
-        # 清理 __pycache__
         find / -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
-
-        # 清理临时文件
         rm -rf /tmp/* /var/tmp/*
-
-        # 清理 apt retry 配置（构建完不再需要）
         rm -f /etc/apt/apt.conf.d/80clawshell-retry
     "
 
     umount_vfs
-    save_checkpoint 7
+    # stage 7 不存 checkpoint，马上就打包了
 fi
 
 # ── 打包 ─────────────────────────────────────────────────────────────────
 
-if [[ ! -d "$ROOTFS_DIR" ]]; then
-    restore_checkpoint $TOTAL_STAGES
-fi
-
 echo ""
-echo "rootfs 大小：$(du -sh "$ROOTFS_DIR" | cut -f1)"
-
-echo "正在打包 $OUTPUT ..."
+echo "rootfs 大小: $(du -sh "$ROOTFS_DIR" | cut -f1)"
+echo "正在打包 ..."
 tar -czf "$OUTPUT" -C "$ROOTFS_DIR" .
+
+# 构建成功，自动清除 checkpoint 节省空间
+clean_checkpoint
+echo "  ✓ checkpoint 已自动清除"
 
 echo ""
 echo "=========================================="
-echo " 构建完成！"
+echo " ✓ 构建完成！"
 echo ""
-echo " 输出文件：$OUTPUT"
-echo " 文件大小：$(du -sh "$OUTPUT" | cut -f1)"
-echo " rootfs：$(du -sh "$ROOTFS_DIR" | cut -f1)"
-echo ""
-echo " 管理构建缓存："
-echo "   sudo $0 --list           # 查看缓存状态"
-echo "   sudo $0 --from 5         # 从阶段 5 重建"
-echo "   sudo $0 --clean          # 清除 checkpoint（保留下载缓存）"
-echo "   sudo $0 --purge-cache    # 清除下载缓存"
+echo " 输出: $OUTPUT"
+echo " 大小: $(du -sh "$OUTPUT" | cut -f1)"
 echo "=========================================="
