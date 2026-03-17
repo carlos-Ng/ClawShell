@@ -35,48 +35,86 @@ Agent 想做任何事，必须经过 ClawShell 的审批。安全网关运行在
 
 ---
 
+## 快速安装（推荐）
+
+### 系统要求
+
+| 要求 | 说明 |
+|------|------|
+| Windows 10 2004 (Build 19041) 或更高 | WSL2 最低要求 |
+| WSL2 已启用 | 见下方说明 |
+| 硬盘空间 ≥ 4 GB | rootfs + 二进制文件 |
+| 内存 ≥ 8 GB | WSL2 + Agent 运行 |
+
+**WSL2 未安装时**，在管理员 PowerShell 中执行：
+
+```powershell
+wsl --install --no-distribution
+```
+
+安装完成后**重启电脑**，再继续。
+
+### 一键安装
+
+在 **PowerShell** 中执行（无需管理员权限）：
+
+```powershell
+irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 | iex
+```
+
+安装程序会自动完成：检查 WSL2、下载组件、导入 VM 镜像、配置 AI 后端、生成 Gateway Token、配置开机自启并启动 ClawShell。安装结束后终端会显示 OpenClaw WebUI 地址与 Token。
+
+### 升级与卸载
+
+```powershell
+# 升级（保留数据）
+irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 | iex -Upgrade
+
+# 卸载
+irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 | iex -Uninstall
+```
+
+---
+
+## 首次使用
+
+1. **确认 ClawShell 运行**：系统托盘出现 ClawShell 图标，或手动启动 `%LOCALAPPDATA%\ClawShell\bin\ClawShellUI.exe`
+2. **访问 OpenClaw**：浏览器打开 `http://localhost:18789`，输入安装时显示的 Token（保存在 `%LOCALAPPDATA%\ClawShell\gateway-token.txt`）
+3. **Claude Desktop 集成**：在 `%APPDATA%\Claude\claude_desktop_config.json` 的 `mcpServers` 中添加 `clawshell`，`args` 指向 `%LOCALAPPDATA%\ClawShell\mcp\mcp_server.py`
+
+---
+
 ## 架构概览
 
 ```
 ╔══════════════════════════════════════════════════════════════╗
-║  隔离环境（虚拟机 / 沙箱）                                    ║
-║                                                              ║
+║  隔离环境（WSL2 虚拟机）                                      ║
 ║  ┌────────────────────────────────────────────────────────┐  ║
-║  │  AI Agent (OpenClaw / Claude Desktop / Cursor 等)      │  ║
-║  │  接收 GUI 描述 → 决策 → 发出操作意图                     │  ║
+║  │  AI Agent（OpenClaw / Claude Desktop / Cursor 等）      │  ║
 ║  └────────────────────────────┬───────────────────────────┘  ║
-║                               │ MCP (stdio)
-║                               ▼                              ║
-║  ┌────────────────────────────────────────────────────────┐  ║
-║  │  mcp_server.py — MCP 协议桥接                           │  ║
-║  │  将 Tool 调用转发至宿主机                               │  ║
+║                               │ MCP (stdio)                  ║
+║  ┌────────────────────────────▼───────────────────────────┐  ║
+║  │  mcp_server.py — MCP 协议桥接，通过 AF_VSOCK 转发       │  ║
 ║  └────────────────────────────┬───────────────────────────┘  ║
-║                               │                              ║
 ╚═══════════════════════════════╪══════════════════════════════╝
-                                │ Channel 1（Named Pipe）
-                                │ beginTask / endTask / capability
-                                │
+                                │ Channel 3（AF_VSOCK）
 ╔═══════════════════════════════╪══════════════════════════════╗
 ║  宿主机                        ▼                              ║
-║                                                              ║
 ║  ┌────────────────────────────────────────────────────────┐  ║
-║  │  crew_shell_service (daemon)                            │  ║
-║  │  ├── TaskRegistry — 任务生命周期 + 意图指纹授权缓存      │  ║
-║  │  ├── SecurityChain — 安全审查链（入站 + 出站）           │  ║
-║  │  ├── CapabilityService — 能力路由 + 确认流程             │  ║
-║  │  ├── capability_ax.dll — GUI 识别 + 操作执行 (UIA)      │  ║
+║  │  crew_shell_service (daemon) + VsockServer + vmm.exe    │  ║
+║  │  ├── TaskRegistry、SecurityChain、CapabilityService     │  ║
+║  │  ├── capability_ax.dll、security_filter.dll             │  ║
 ║  │  └── UIService — Channel 2 事件总线                     │  ║
-║  └──────────────────────┬─────────────┬────────────────────┘  ║
-║                         │             │ Channel 2（Named Pipe）║
-║                         ▼             ▼ status/task/op_log/confirm
-║  ┌──────────────────┐  ┌─────────────────────────────────┐    ║
-║  │  用户桌面应用窗口 │  │  ClawShell UI (WinForms)        │    ║
-║  └──────────────────┘  │  任务监控 + 确认弹窗             │    ║
-║                        └─────────────────────────────────┘    ║
+║  └──────────────────────┬─────────────────────────────────┘  ║
+║                         │ Channel 2（Named Pipe）             ║
+║                         ▼ status/task/op_log/confirm         ║
+║  ┌─────────────────────────────────────────────────────────┐  ║
+║  │  ClawShell UI (WinForms) — 托盘 · 任务监控 · 确认弹窗     │  ║
+║  └─────────────────────────────────────────────────────────┘  ║
 ╚══════════════════════════════════════════════════════════════╝
 ```
 
-> **Phase 1 兼容**：当前 Windows 版本中，MCP Server 可直接运行在宿主机，通过 Named Pipe 与 daemon 通信，用于开发调试与 Claude Desktop 等本地 MCP 客户端集成。完整虚拟化隔离架构将在后续版本中提供。
+> **Phase 1 兼容**：MCP Server 也可直接运行在宿主机，通过 Named Pipe 与 daemon 通信，用于开发调试与 Claude Desktop 等本地 MCP 客户端集成。
 
 ---
 
@@ -151,9 +189,11 @@ cmake --build build --target dist
 
 | 路径 | 说明 |
 |------|------|
-| `build\Debug\crew_shell_service.exe` | 主程序 |
+| `build\Debug\crew_shell_service.exe` | 主 daemon |
+| `build\Debug\vmm.exe` | VM 管理器 |
 | `build\daemon-service\Debug\capability_ax.dll` | AX 能力模块 |
 | `build\Debug\security_filter.dll` | 安全过滤模块 |
+| `ui\bin\Release\net8.0-windows\win-x64\publish\ClawShellUI.exe` | 托盘 UI |
 | `dist\` | 发布目录（`--target dist` 后生成） |
 
 ---
@@ -212,6 +252,16 @@ python tools\ax_test_client.py -f tools\scripts\01_normal_task.txt
 ```powershell
 python tools\mcp_server.py
 ```
+
+### 构建 VM rootfs
+
+rootfs 包含 WSL2 虚拟机镜像（Debian + OpenClaw + ClawShell MCP Server）。在 Linux/WSL2 环境中执行：
+
+```bash
+bash scripts/build-rootfs.sh
+```
+
+生成 `clawshell-rootfs.tar.gz`，上传到 GitHub Release 供 `install.ps1` 下载。
 
 ---
 
@@ -333,21 +383,16 @@ rules_file = "config\\security_filter_rules.toml"
 ```
 ClawShell/
 ├── include/                    # 公开头文件
-│   ├── common/                 # 错误码、日志、类型
-│   ├── core/base/              # 模块接口、安全链、能力服务
-│   ├── core/                   # TaskRegistry
-│   └── ipc/                    # IPC 接口、UIService
-├── daemon-service/             # 实现源文件
-│   ├── core/                   # CapabilityService、TaskRegistry、SecurityChain
-│   ├── daemon/                 # main.cc、daemon.cc（入口与生命周期管理）
-│   ├── capability/ax/          # AX 能力模块（Windows UI Automation）
-│   ├── security/filter/        # 基于 TOML 规则的安全过滤模块
-│   └── ipc/                    # Named Pipe + UIService + FrameCodec
-├── ui/                         # ClawShell WinForms UI（Channel 2 客户端）
+├── daemon-service/             # C++ daemon 实现
+├── vmm/                        # VM 管理器（vmm.exe）
+├── ui/                         # ClawShell WinForms UI（C# .NET 8）
+├── mcp/                        # MCP Server（Python，运行在 VM 内）
 ├── config/                     # 配置文件模板
-├── tools/                      # Python 测试与 MCP 工具
-├── clawshell.toml              # 项目根开发配置
-└── third_party/                # 第三方 header-only 库
+├── scripts/                    # build-rootfs.sh、install.ps1
+├── tools/                      # 开发测试工具（Python）
+├── tests/                      # 单元测试
+├── third_party/                # 第三方 header-only 库
+└── clawshell.toml              # 项目根开发配置
 ```
 
 ---
