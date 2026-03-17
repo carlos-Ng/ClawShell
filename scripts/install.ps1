@@ -193,6 +193,20 @@ if ($osVersion.Build -lt 19041) {
 }
 Write-Ok "Windows 版本: $($osVersion.ToString())"
 
+# curl.exe（下载工具，Windows 10 17063+ 自带）
+$CurlExe = (Get-Command "curl.exe" -ErrorAction SilentlyContinue)?.Source
+if (-not $CurlExe) {
+    Write-Err "未找到 curl.exe"
+    Write-Host ""
+    Write-Host "  curl.exe 是 Windows 10 (Build 17063) 及以上版本的内置工具。" -ForegroundColor Yellow
+    Write-Host "  如果你的系统没有，可以从以下地址下载安装：" -ForegroundColor Yellow
+    Write-Host "    https://curl.se/windows/" -ForegroundColor White
+    Write-Host "  安装后请重新运行此脚本。" -ForegroundColor Yellow
+    Write-Host ""
+    exit 1
+}
+Write-Ok "curl.exe: $CurlExe"
+
 # WSL2
 $wslStatus = $null
 try {
@@ -277,23 +291,25 @@ New-Item -ItemType Directory -Path $DownloadDir -Force | Out-Null
 function Invoke-Download {
     param([string]$Url, [string]$Dest, [string]$Desc)
     Write-Step "下载 $Desc ..."
-    try {
-        Start-BitsTransfer -Source $Url -Destination $Dest -ErrorAction Stop
-        Write-Ok $Desc
-    } catch {
-        Write-Warn "BITS 不可用，使用 WebClient ..."
-        try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            (New-Object Net.WebClient).DownloadFile($Url, $Dest)
-            Write-Ok $Desc
-        } catch {
-            Write-Err "下载失败: $Desc"
-            Write-Err "  URL: $Url"
-            Write-Err "  错误: $_"
-            Write-Host "  请检查网络连接后重新运行安装脚本。" -ForegroundColor Yellow
-            exit 1
-        }
+    Write-Host ""
+    # -L  跟随重定向（GitHub Release 有 302 跳转）
+    # -#  进度条模式
+    # -C- 断点续传（若目标文件已存在则从中断处继续）
+    # --retry 3  网络故障自动重试 3 次
+    # --retry-delay 2  重试间隔 2 秒
+    & $CurlExe -L "-#" -C - --retry 3 --retry-delay 2 -o $Dest $Url
+    Write-Host ""
+    if ($LASTEXITCODE -ne 0) {
+        Write-Err "下载失败: $Desc (curl 退出码: $LASTEXITCODE)"
+        Write-Err "  URL: $Url"
+        Write-Host ""
+        Write-Host "  若无法访问 GitHub，可先通过浏览器下载以下文件到同一目录：" -ForegroundColor Yellow
+        Write-Host "    - clawshell-windows-$ResolvedVersion.zip" -ForegroundColor White
+        Write-Host "    - clawshell-rootfs.tar.gz（首次安装）" -ForegroundColor White
+        Write-Host ""
+        exit 1
     }
+    Write-Ok $Desc
 }
 
 # 解析实际版本号（用于构造带版本号的 zip 文件名）
