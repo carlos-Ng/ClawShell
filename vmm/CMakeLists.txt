@@ -39,7 +39,7 @@ add_executable(clawshell_vmm_exe
     vmm_app.cc
 )
 set_target_properties(clawshell_vmm_exe PROPERTIES
-    OUTPUT_NAME "vmm"
+    OUTPUT_NAME "claw_shell_vmm"
 )
 target_include_directories(clawshell_vmm_exe PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}

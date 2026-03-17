@@ -59,7 +59,14 @@ wsl --install --no-distribution
 在 **PowerShell** 中执行（无需管理员权限）：
 
 ```powershell
+# 安装最新版本
 irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 | iex
+
+# 安装指定版本
+irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 | iex -Version 0.1.0
+
+# 或直接下载该版本的安装脚本（URL 本身固定了版本，无需 -Version 参数）
+irm https://github.com/carlos-Ng/ClawShell/releases/download/v0.1.0/install.ps1 | iex
 ```
 
 安装程序会自动完成：检查 WSL2、下载组件、导入 VM 镜像、配置 AI 后端、生成 Gateway Token、配置开机自启并启动 ClawShell。安装结束后终端会显示 OpenClaw WebUI 地址与 Token。
@@ -67,7 +74,7 @@ irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 
 ### 升级与卸载
 
 ```powershell
-# 升级（保留数据）
+# 升级到最新版（保留数据）
 irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 | iex -Upgrade
 
 # 卸载
@@ -78,7 +85,7 @@ irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 
 
 ## 首次使用
 
-1. **确认 ClawShell 运行**：系统托盘出现 ClawShell 图标，或手动启动 `%LOCALAPPDATA%\ClawShell\bin\ClawShellUI.exe`
+1. **确认 ClawShell 运行**：系统托盘出现 ClawShell 图标，或手动启动 `%LOCALAPPDATA%\ClawShell\bin\claw_shell_ui.exe`
 2. **访问 OpenClaw**：浏览器打开 `http://localhost:18789`，输入安装时显示的 Token（保存在 `%LOCALAPPDATA%\ClawShell\gateway-token.txt`）
 3. **Claude Desktop 集成**：在 `%APPDATA%\Claude\claude_desktop_config.json` 的 `mcpServers` 中添加 `clawshell`，`args` 指向 `%LOCALAPPDATA%\ClawShell\mcp\mcp_server.py`
 
@@ -101,7 +108,7 @@ irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 
 ╔═══════════════════════════════╪══════════════════════════════╗
 ║  宿主机                        ▼                              ║
 ║  ┌────────────────────────────────────────────────────────┐  ║
-║  │  crew_shell_service (daemon) + VsockServer + vmm.exe    │  ║
+║  │  claw_shell_service + VsockServer + claw_shell_vmm       │  ║
 ║  │  ├── TaskRegistry、SecurityChain、CapabilityService     │  ║
 ║  │  ├── capability_ax.dll、security_filter.dll             │  ║
 ║  │  └── UIService — Channel 2 事件总线                     │  ║
@@ -183,17 +190,21 @@ cmake --build build
 
 # 生成 dist 发布目录（exe + dll + config）
 cmake --build build --target dist
+
+# 打包 Release zip（供 GitHub Release 上传）
+cmake --build build --target release
+# 输出：clawshell-windows-<version>.zip（位于项目根目录）
 ```
 
 ### 构建产物
 
 | 路径 | 说明 |
 |------|------|
-| `build\Debug\crew_shell_service.exe` | 主 daemon |
-| `build\Debug\vmm.exe` | VM 管理器 |
+| `build\Debug\claw_shell_service.exe` | 主 daemon |
+| `build\Debug\claw_shell_vmm.exe` | VM 管理器 |
 | `build\daemon-service\Debug\capability_ax.dll` | AX 能力模块 |
 | `build\Debug\security_filter.dll` | 安全过滤模块 |
-| `ui\bin\Release\net8.0-windows\win-x64\publish\ClawShellUI.exe` | 托盘 UI |
+| `ui\bin\Release\net8.0-windows\win-x64\publish\claw_shell_ui.exe` | 托盘 UI |
 | `dist\` | 发布目录（`--target dist` 后生成） |
 
 ---
@@ -204,7 +215,7 @@ cmake --build build --target dist
 
 ```powershell
 cd dist
-.\bin\crew_shell_service.exe -f -c config\clawshell.toml
+.\bin\claw_shell_service.exe -f -c config\clawshell.toml
 ```
 
 `-f` 表示前台运行，日志输出到控制台。
@@ -212,7 +223,7 @@ cd dist
 ### 方式二：从项目根目录运行（开发模式）
 
 ```powershell
-.\build\Debug\crew_shell_service.exe -f
+.\build\Debug\claw_shell_service.exe -f
 ```
 
 顶层 `clawshell.toml` 的 `module_dir` 指向 `build\daemon-service`，适合开发调试。
@@ -262,6 +273,16 @@ bash scripts/build-rootfs.sh
 ```
 
 生成 `clawshell-rootfs.tar.gz`，上传到 GitHub Release 供 `install.ps1` 下载。
+
+### 发布 Release
+
+每次发布时，将以下文件上传到 GitHub Release（tag 格式：`v<version>`）：
+
+| 文件 | 来源 |
+|------|------|
+| `clawshell-windows-<ver>.zip` | `cmake --build build --target release` 生成 |
+| `clawshell-rootfs.tar.gz` | `bash scripts/build-rootfs.sh` 生成 |
+| `install.ps1` | `scripts/install.ps1` |
 
 ---
 
@@ -384,7 +405,7 @@ rules_file = "config\\security_filter_rules.toml"
 ClawShell/
 ├── include/                    # 公开头文件
 ├── daemon-service/             # C++ daemon 实现
-├── vmm/                        # VM 管理器（vmm.exe）
+├── vmm/                        # VM 管理器（claw_shell_vmm.exe）
 ├── ui/                         # ClawShell WinForms UI（C# .NET 8）
 ├── mcp/                        # MCP Server（Python，运行在 VM 内）
 ├── config/                     # 配置文件模板

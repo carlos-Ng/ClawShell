@@ -44,7 +44,7 @@ static void blockTerminationSignals()
 // - false: 遇到 --help 或 --version，已打印信息，调用方应退出（返回 0）。
 static bool parseArgs(int argc, char** argv, clawshell::daemon::DaemonConfig& config)
 {
-	cxxopts::Options opts("crew_shell_service", "ClawShell daemon — secure capability host for AI agents");
+	cxxopts::Options opts("claw_shell_service", "ClawShell daemon — secure capability host for AI agents");
 
 	opts.add_options()
 	    ("c,config",
@@ -83,7 +83,7 @@ static bool parseArgs(int argc, char** argv, clawshell::daemon::DaemonConfig& co
 		return false;
 	}
 	if (result.count("version")) {
-		std::cout << "crew_shell_service " << CLAWSHELL_VERSION << "\n";
+		std::cout << "claw_shell_service " << CLAWSHELL_VERSION << "\n";
 		return false;
 	}
 
