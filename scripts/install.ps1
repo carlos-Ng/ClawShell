@@ -13,6 +13,11 @@
     一行命令安装：
       irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 | iex
 
+    Release 资产说明：
+      clawshell-windows.zip    — Windows 侧所有二进制文件（daemon、vmm、ui、dll）
+      clawshell-rootfs.tar.gz  — WSL2 虚拟机镜像（首次安装时下载）
+      install.ps1              — 本安装脚本
+
 .PARAMETER Uninstall
     卸载 ClawShell
 
@@ -45,14 +50,17 @@ $UninstallRegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$A
 # GitHub Release 配置（发布时替换为真实 URL）
 $DefaultReleaseBase = "https://github.com/carlos-Ng/ClawShell/releases/latest/download"
 
-# 需要下载的文件
-$ReleaseFiles = @(
-    @{ Name = "clawshell-rootfs.tar.gz";  Desc = "VM 镜像" }
-    @{ Name = "crew_shell_service.exe";   Desc = "Daemon" }
-    @{ Name = "vmm.exe";                  Desc = "VM 管理器" }
-    @{ Name = "ClawShellUI.exe";          Desc = "托盘 UI" }
-    @{ Name = "capability_ax.dll";        Desc = "GUI 自动化插件" }
-    @{ Name = "security_filter.dll";      Desc = "安全过滤插件" }
+# Release 资产（zip 包含所有 Windows 二进制，rootfs 单独打包以便升级时跳过）
+$WindowsZipName = "clawshell-windows.zip"
+$RootfsName     = "clawshell-rootfs.tar.gz"
+
+# zip 包内的文件列表（用于安装验证）
+$WindowsBinFiles = @(
+    "claw_shell_service.exe"
+    "claw_shell_vmm.exe"
+    "claw_shell_ui.exe"
+    "capability_ax.dll"
+    "security_filter.dll"
 )
 
 # ── 工具函数 ─────────────────────────────────────────────────────────────
@@ -103,7 +111,7 @@ if ($Uninstall) {
 
     # 停止进程
     Write-Step "停止 $AppName 进程 ..."
-    Get-Process -Name "crew_shell_service", "ClawShellUI" -ErrorAction SilentlyContinue |
+    Get-Process -Name "claw_shell_service", "claw_shell_ui" -ErrorAction SilentlyContinue |
         Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 1
 
@@ -249,38 +257,36 @@ if (-not $ReleaseUrl) { $ReleaseUrl = $DefaultReleaseBase }
 
 New-Item -ItemType Directory -Path $DownloadDir -Force | Out-Null
 
-$filesToDownload = $ReleaseFiles
-if ($isUpgrade) {
-    # 升级模式不需要重新下载 rootfs
-    $filesToDownload = $ReleaseFiles | Where-Object { $_.Name -ne "clawshell-rootfs.tar.gz" }
-}
-
-foreach ($file in $filesToDownload) {
-    $url  = "$ReleaseUrl/$($file.Name)"
-    $dest = Join-Path $DownloadDir $file.Name
-
-    Write-Step "下载 $($file.Desc) ($($file.Name)) ..."
-
+function Invoke-Download {
+    param([string]$Url, [string]$Dest, [string]$Desc)
+    Write-Step "下载 $Desc ..."
     try {
-        # 使用 BITS 传输（支持断点续传）
-        $bitsJob = Start-BitsTransfer -Source $url -Destination $dest -ErrorAction Stop
-        Write-Ok "$($file.Name)"
+        Start-BitsTransfer -Source $Url -Destination $Dest -ErrorAction Stop
+        Write-Ok $Desc
     } catch {
-        # 降级到 WebClient（BITS 不可用时）
         Write-Warn "BITS 不可用，使用 WebClient ..."
         try {
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            (New-Object Net.WebClient).DownloadFile($url, $dest)
-            Write-Ok "$($file.Name)"
+            (New-Object Net.WebClient).DownloadFile($Url, $Dest)
+            Write-Ok $Desc
         } catch {
-            Write-Err "下载失败: $($file.Name)"
-            Write-Err "  URL: $url"
+            Write-Err "下载失败: $Desc"
+            Write-Err "  URL: $Url"
             Write-Err "  错误: $_"
-            Write-Host ""
             Write-Host "  请检查网络连接后重新运行安装脚本。" -ForegroundColor Yellow
             exit 1
         }
     }
+}
+
+# 下载 Windows 二进制 zip 包（升级和全新安装都需要）
+$zipDest = Join-Path $DownloadDir $WindowsZipName
+Invoke-Download -Url "$ReleaseUrl/$WindowsZipName" -Dest $zipDest -Desc "Windows 组件包 ($WindowsZipName)"
+
+# 首次安装时下载 rootfs（升级跳过）
+if (-not $isUpgrade) {
+    $rootfsDest = Join-Path $DownloadDir $RootfsName
+    Invoke-Download -Url "$ReleaseUrl/$RootfsName" -Dest $rootfsDest -Desc "VM 镜像 ($RootfsName)"
 }
 
 # ── 配置向导 ─────────────────────────────────────────────────────────────
@@ -383,26 +389,21 @@ New-Item -ItemType Directory -Path $DistroDir -Force | Out-Null
 
 # 停止已运行的进程
 Write-Step "停止旧进程 ..."
-Get-Process -Name "crew_shell_service", "ClawShellUI" -ErrorAction SilentlyContinue |
+Get-Process -Name "claw_shell_service", "claw_shell_ui" -ErrorAction SilentlyContinue |
     Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 1
 
-# 复制可执行文件
-Write-Step "安装程序文件 ..."
-$binFiles = @("crew_shell_service.exe", "vmm.exe", "ClawShellUI.exe", "capability_ax.dll", "security_filter.dll")
-foreach ($f in $binFiles) {
-    $src = Join-Path $DownloadDir $f
-    if (Test-Path $src) {
-        Copy-Item $src (Join-Path $BinDir $f) -Force
-    }
-}
+# 解压 Windows 组件包
+Write-Step "解压 Windows 组件包 ..."
+$zipPath = Join-Path $DownloadDir $WindowsZipName
+Expand-Archive -Path $zipPath -DestinationPath $BinDir -Force
 Write-Ok "程序文件已安装"
 
 # ── 导入 WSL Distro ──────────────────────────────────────────────────────
 
 if (-not $isUpgrade) {
     Write-Step "导入 WSL 虚拟机 ..."
-    $rootfsPath = Join-Path $DownloadDir "clawshell-rootfs.tar.gz"
+    $rootfsPath = Join-Path $DownloadDir $RootfsName
 
     if (-not (Test-Path $rootfsPath)) {
         Write-Err "rootfs 文件不存在: $rootfsPath"
@@ -625,7 +626,7 @@ Write-Ok "Gateway 令牌已保存至 $tokenFilePath"
 
 Write-Step "注册开机启动 ..."
 
-$daemonExe = Join-Path $BinDir "crew_shell_service.exe"
+$daemonExe = Join-Path $BinDir "claw_shell_service.exe"
 $configPath = Join-Path $ConfigDir "daemon.toml"
 
 # 创建快捷方式到 Startup 文件夹
@@ -672,7 +673,7 @@ Start-Process -FilePath $daemonExe -ArgumentList "--config", "`"$configPath`"" -
 Write-Ok "daemon 已启动"
 
 # UI
-$uiExe = Join-Path $BinDir "ClawShellUI.exe"
+$uiExe = Join-Path $BinDir "claw_shell_ui.exe"
 if (Test-Path $uiExe) {
     Write-Step "启动 UI ..."
     Start-Process -FilePath $uiExe -WindowStyle Hidden

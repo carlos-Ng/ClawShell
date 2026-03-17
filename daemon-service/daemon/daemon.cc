@@ -668,7 +668,7 @@ Status Daemon::init(DaemonConfig config)
 			LOG_WARN("vmm_launcher start failed: {}, VM management disabled",
 			         vmm_status.message);
 		} else {
-			LOG_INFO("vmm.exe started for distro '{}'", config.vmm_distro_name);
+			LOG_INFO("claw_shell_vmm.exe started for distro '{}'", config.vmm_distro_name);
 			implement_->updateVmState("starting");
 
 			// 启动后台健康探测线程（延迟确认 VM + 周期探测 OpenClaw）

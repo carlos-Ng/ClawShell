@@ -1,16 +1,16 @@
-// main.cc — vmm.exe 入口点
+// main.cc — claw_shell_vmm.exe 入口点
 //
-// 每个 WSL2 distro 对应一个 vmm.exe 实例，负责 VM 生命周期管理：
+// 每个 WSL2 distro 对应一个 claw_shell_vmm.exe 实例，负责 VM 生命周期管理：
 //   - 通过 Channel 1 Named Pipe 连接 daemon，上报 distro 状态
 //   - 接收 daemon 的管理命令（启动/停止/快照等）
 //   - Watchdog 监控 distro 健康状态
 //
 // 注意：VM 数据通路（capability 调用）由 daemon 的 VsockServer 直接处理，
-// vmm.exe 不参与数据转发。
+// claw_shell_vmm.exe 不参与数据转发。
 //
 // 用法:
-//   vmm.exe --distro ClawShell [--daemon-pipe \\.\pipe\crew-shell-service]
-//           [--log-level info] [-f]
+//   claw_shell_vmm.exe --distro ClawShell [--daemon-pipe \\.\pipe\crew-shell-service]
+//                      [--log-level info] [-f]
 
 #include "vmm_app.h"
 

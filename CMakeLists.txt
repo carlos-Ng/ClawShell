@@ -134,22 +134,22 @@ target_link_libraries(security_filter PRIVATE clawshell_core clawshell_headers)
 
 # ─── Daemon executable ───────────────────────────────────────────────────────
 
-add_executable(crew_shell_service
+add_executable(claw_shell_service
     daemon-service/daemon/main.cc
     daemon-service/daemon/daemon.cc
     daemon-service/daemon/vmm_launcher.cc
 )
-target_include_directories(crew_shell_service PRIVATE
+target_include_directories(claw_shell_service PRIVATE
     ${CMAKE_SOURCE_DIR}/daemon-service/daemon
     ${CMAKE_SOURCE_DIR}/daemon-service
 )
-target_link_libraries(crew_shell_service PRIVATE
+target_link_libraries(claw_shell_service PRIVATE
     clawshell_core
     clawshell_ipc
     clawshell_vmm
     clawshell_headers
 )
-target_compile_definitions(crew_shell_service PRIVATE
+target_compile_definitions(claw_shell_service PRIVATE
     CLAWSHELL_VERSION="${PROJECT_VERSION}"
 )
 
@@ -177,10 +177,10 @@ endif()
 # ─── 发布目录 dist ───────────────────────────────────────────────────────────
 #
 # 用于手工测试与打包：将 daemon、dll、UI、config 复制到 dist/。
-# 结构：dist/bin/{crew_shell_service.exe, ClawShellUI.exe}, dist/lib/*.dll, dist/config/*.toml
+# 结构：dist/bin/{claw_shell_service.exe, claw_shell_ui.exe}, dist/lib/*.dll, dist/config/*.toml
 #
 # 构建：cmake --build <build_dir> --target dist
-# 运行：cd dist && .\bin\crew_shell_service.exe -f -c clawshell.toml
+# 运行：cd dist && .\bin\claw_shell_service.exe -f -c clawshell.toml
 
 set(CLAWSHELL_DIST_DIR "${CMAKE_SOURCE_DIR}/dist")
 
@@ -197,8 +197,8 @@ add_custom_target(dist
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CLAWSHELL_DIST_DIR}/lib"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CLAWSHELL_DIST_DIR}/config"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        $<TARGET_FILE:crew_shell_service>
-        "${CLAWSHELL_DIST_DIR}/bin/crew_shell_service${CLAWSHELL_EXE_EXT}"
+        $<TARGET_FILE:claw_shell_service>
+        "${CLAWSHELL_DIST_DIR}/bin/claw_shell_service${CLAWSHELL_EXE_EXT}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         $<TARGET_FILE:capability_ax>
         "${CLAWSHELL_DIST_DIR}/lib/${CLAWSHELL_LIB_PREFIX}capability_ax${CLAWSHELL_LIB_EXT}"
@@ -213,9 +213,9 @@ add_custom_target(dist
         "${CLAWSHELL_DIST_DIR}/config/security_filter_rules.toml"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         $<TARGET_FILE:clawshell_vmm_exe>
-        "${CLAWSHELL_DIST_DIR}/bin/vmm${CLAWSHELL_EXE_EXT}"
+        "${CLAWSHELL_DIST_DIR}/bin/claw_shell_vmm${CLAWSHELL_EXE_EXT}"
     COMMENT "Populating dist/ with daemon, vmm, dlls and config"
-    DEPENDS crew_shell_service clawshell_vmm_exe capability_ax security_filter
+    DEPENDS claw_shell_service clawshell_vmm_exe capability_ax security_filter
 )
 
 if(DOTNET_EXECUTABLE)
