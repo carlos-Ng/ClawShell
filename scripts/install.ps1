@@ -26,6 +26,10 @@
 .PARAMETER Version
     指定要安装的版本号（如 0.1.0）。留空则安装最新版。
 
+.PARAMETER LocalSource
+    本地目录路径。若指定，则跳过下载，从该目录读取 clawshell-windows-*.zip 和 clawshell-rootfs.tar.gz。
+    适用于无法访问 GitHub 时，先通过浏览器下载后本地安装。
+
 .PARAMETER Uninstall
     卸载 ClawShell
 
@@ -38,6 +42,7 @@ param(
     [switch]$Uninstall,
     [switch]$Upgrade,
     [string]$Version = "",
+    [string]$LocalSource = "",
     [string]$InstallDir = "",
     [string]$ApiKey = "",
     [string]$ApiProvider = "",
@@ -270,63 +275,111 @@ if (-not $isUpgrade) {
     Write-Banner "下载更新"
 }
 
-if (-not $ReleaseUrl) { $ReleaseUrl = $DefaultReleaseBase }
-
 New-Item -ItemType Directory -Path $DownloadDir -Force | Out-Null
 
-function Invoke-Download {
-    param([string]$Url, [string]$Dest, [string]$Desc)
-    Write-Step "下载 $Desc ..."
-    try {
-        Start-BitsTransfer -Source $Url -Destination $Dest -ErrorAction Stop
-        Write-Ok $Desc
-    } catch {
-        Write-Warn "BITS 不可用，使用 WebClient ..."
-        try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            (New-Object Net.WebClient).DownloadFile($Url, $Dest)
-            Write-Ok $Desc
-        } catch {
-            Write-Err "下载失败: $Desc"
-            Write-Err "  URL: $Url"
-            Write-Err "  错误: $_"
-            Write-Host "  请检查网络连接后重新运行安装脚本。" -ForegroundColor Yellow
-            exit 1
-        }
-    }
-}
-
-# 解析实际版本号（用于构造带版本号的 zip 文件名）
-# 指定了 -Version 则直接使用；否则通过 GitHub API 查询 latest release tag
 $ResolvedVersion = $Version
-if (-not $ResolvedVersion) {
-    Write-Step "查询最新版本号 ..."
-    try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $apiResp = Invoke-RestMethod -Uri "https://api.github.com/repos/carlos-Ng/ClawShell/releases/latest" -ErrorAction Stop
-        $ResolvedVersion = $apiResp.tag_name -replace '^v', ''
-        Write-Ok "最新版本: $ResolvedVersion"
-    } catch {
-        Write-Warn "无法查询 GitHub API，将直接尝试下载（需要网络可访问 GitHub）"
+$zipDest = $null
+$rootfsDest = $null
+
+if ($LocalSource) {
+    # 本地安装模式：从指定目录读取，跳过下载
+    $localDir = $LocalSource.Trim()
+    if (-not (Test-Path $localDir -PathType Container)) {
+        Write-Err "本地目录不存在: $localDir"
+        exit 1
+    }
+    Write-Ok "使用本地目录: $localDir"
+
+    # 查找 Windows zip（支持 clawshell-windows-0.1.0.zip 或 clawshell-windows.zip）
+    $zipFiles = Get-ChildItem -Path $localDir -Filter "clawshell-windows*.zip" -ErrorAction SilentlyContinue
+    if (-not $zipFiles -or $zipFiles.Count -eq 0) {
+        Write-Err "本地目录中未找到 clawshell-windows*.zip"
+        Write-Host "  请将 clawshell-windows-0.1.0.zip 放入该目录后重试。" -ForegroundColor Yellow
+        exit 1
+    }
+    $zipSrc = $zipFiles[0].FullName
+    $WindowsZipName = $zipFiles[0].Name
+    if ($WindowsZipName -match "clawshell-windows-(.+)\.zip$") {
+        $ResolvedVersion = $Matches[1]
+    } else {
         $ResolvedVersion = "latest"
     }
-}
+    Write-Step "复制 Windows 组件包 ($WindowsZipName) ..."
+    Copy-Item $zipSrc (Join-Path $DownloadDir $WindowsZipName) -Force
+    Write-Ok "Windows 组件包已就绪"
 
-# zip 文件名含版本号（与 CMake release target 输出一致）
-$WindowsZipName = if ($ResolvedVersion -eq "latest") {
-    "clawshell-windows.zip"
+    if (-not $isUpgrade) {
+        $rootfsSrc = Join-Path $localDir $RootfsName
+        if (-not (Test-Path $rootfsSrc)) {
+            Write-Err "本地目录中未找到 $RootfsName"
+            Write-Host "  请将 clawshell-rootfs.tar.gz 放入该目录后重试。" -ForegroundColor Yellow
+            exit 1
+        }
+        Write-Step "复制 VM 镜像 ($RootfsName) ..."
+        Copy-Item $rootfsSrc (Join-Path $DownloadDir $RootfsName) -Force
+        Write-Ok "VM 镜像已就绪"
+    }
+    $zipDest = Join-Path $DownloadDir $WindowsZipName
+    if (-not $isUpgrade) { $rootfsDest = Join-Path $DownloadDir $RootfsName }
 } else {
-    "clawshell-windows-$ResolvedVersion.zip"
-}
+    # 在线下载模式
+    if (-not $ReleaseUrl) { $ReleaseUrl = $DefaultReleaseBase }
 
-# 下载 Windows 二进制 zip 包（升级和全新安装都需要）
-$zipDest = Join-Path $DownloadDir $WindowsZipName
-Invoke-Download -Url "$ReleaseUrl/$WindowsZipName" -Dest $zipDest -Desc "Windows 组件包 ($WindowsZipName)"
+    function Invoke-Download {
+        param([string]$Url, [string]$Dest, [string]$Desc)
+        Write-Step "下载 $Desc ..."
+        try {
+            Start-BitsTransfer -Source $Url -Destination $Dest -ErrorAction Stop
+            Write-Ok $Desc
+        } catch {
+            Write-Warn "BITS 不可用，使用 WebClient ..."
+            try {
+                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                (New-Object Net.WebClient).DownloadFile($Url, $Dest)
+                Write-Ok $Desc
+            } catch {
+                Write-Err "下载失败: $Desc"
+                Write-Err "  URL: $Url"
+                Write-Err "  错误: $_"
+                Write-Host ""
+                Write-Host "  若无法访问 GitHub，可先通过浏览器下载以下文件到同一目录：" -ForegroundColor Yellow
+                Write-Host "    - clawshell-windows-0.1.0.zip" -ForegroundColor White
+                Write-Host "    - clawshell-rootfs.tar.gz（首次安装）" -ForegroundColor White
+                Write-Host "  然后执行: .\install.ps1 -LocalSource "".\""（将 .\ 替换为实际目录）" -ForegroundColor Yellow
+                Write-Host ""
+                exit 1
+            }
+        }
+    }
 
-# 首次安装时下载 rootfs（升级跳过）
-if (-not $isUpgrade) {
-    $rootfsDest = Join-Path $DownloadDir $RootfsName
-    Invoke-Download -Url "$ReleaseUrl/$RootfsName" -Dest $rootfsDest -Desc "VM 镜像 ($RootfsName)"
+    # 解析实际版本号（用于构造带版本号的 zip 文件名）
+    if (-not $ResolvedVersion) {
+        Write-Step "查询最新版本号 ..."
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            $apiResp = Invoke-RestMethod -Uri "https://api.github.com/repos/carlos-Ng/ClawShell/releases/latest" -ErrorAction Stop
+            $ResolvedVersion = $apiResp.tag_name -replace '^v', ''
+            Write-Ok "最新版本: $ResolvedVersion"
+        } catch {
+            Write-Warn "无法查询 GitHub API，将直接尝试下载（需要网络可访问 GitHub）"
+            $ResolvedVersion = "latest"
+        }
+    }
+
+    # zip 文件名含版本号（与 CMake release target 输出一致）
+    $WindowsZipName = if ($ResolvedVersion -eq "latest") {
+        "clawshell-windows.zip"
+    } else {
+        "clawshell-windows-$ResolvedVersion.zip"
+    }
+
+    $zipDest = Join-Path $DownloadDir $WindowsZipName
+    Invoke-Download -Url "$ReleaseUrl/$WindowsZipName" -Dest $zipDest -Desc "Windows 组件包 ($WindowsZipName)"
+
+    if (-not $isUpgrade) {
+        $rootfsDest = Join-Path $DownloadDir $RootfsName
+        Invoke-Download -Url "$ReleaseUrl/$RootfsName" -Dest $rootfsDest -Desc "VM 镜像 ($RootfsName)"
+    }
 }
 
 # ── 配置向导 ─────────────────────────────────────────────────────────────

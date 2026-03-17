@@ -67,6 +67,9 @@ irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 
 
 # 或直接下载该版本的安装脚本（URL 本身固定了版本，无需 -Version 参数）
 irm https://github.com/carlos-Ng/ClawShell/releases/download/v0.1.0/install.ps1 | iex
+
+# 无法访问 GitHub 时：先通过浏览器下载 clawshell-windows-0.1.0.zip 和 clawshell-rootfs.tar.gz 到同一目录，再执行
+.\install.ps1 -LocalSource "."
 ```
 
 安装程序会自动完成：检查 WSL2、下载组件、导入 VM 镜像、配置 AI 后端、生成 Gateway Token、配置开机自启并启动 ClawShell。安装结束后终端会显示 OpenClaw WebUI 地址与 Token。
