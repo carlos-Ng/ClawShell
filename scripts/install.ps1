@@ -11,7 +11,7 @@
       - ClawShell WSL2 虚拟机（内含 OpenClaw + MCP Server）
 
     一行命令安装：
-      irm https://github.com/user/ClawShell/releases/latest/download/install.ps1 | iex
+      irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 | iex
 
 .PARAMETER Uninstall
     卸载 ClawShell
@@ -43,7 +43,7 @@ $StartupDir     = [Environment]::GetFolderPath("Startup")
 $UninstallRegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppName"
 
 # GitHub Release 配置（发布时替换为真实 URL）
-$DefaultReleaseBase = "https://github.com/user/ClawShell/releases/latest/download"
+$DefaultReleaseBase = "https://github.com/carlos-Ng/ClawShell/releases/latest/download"
 
 # 需要下载的文件
 $ReleaseFiles = @(
@@ -645,10 +645,10 @@ Write-Ok "开机启动项已创建"
 Write-Step "注册卸载信息 ..."
 
 New-Item -Path $UninstallRegKey -Force | Out-Null
-$uninstallCmd = "powershell.exe -ExecutionPolicy Bypass -Command `"& { irm https://github.com/user/ClawShell/releases/latest/download/install.ps1 | iex } -Uninstall`""
+$uninstallCmd = "powershell.exe -ExecutionPolicy Bypass -Command `"& { irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 | iex } -Uninstall`""
 
 Set-ItemProperty -Path $UninstallRegKey -Name "DisplayName"     -Value $AppName
-Set-ItemProperty -Path $UninstallRegKey -Name "DisplayVersion"  -Value (Get-Date -Format "yyyy.M.d")
+Set-ItemProperty -Path $UninstallRegKey -Name "DisplayVersion"  -Value "0.1.0"
 Set-ItemProperty -Path $UninstallRegKey -Name "Publisher"       -Value "ClawShell"
 Set-ItemProperty -Path $UninstallRegKey -Name "InstallLocation" -Value $InstallDir
 Set-ItemProperty -Path $UninstallRegKey -Name "UninstallString" -Value $uninstallCmd

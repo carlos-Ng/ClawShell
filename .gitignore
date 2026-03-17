@@ -10,3 +10,33 @@ ui/obj/
 
 # Claude project metadata
 .claude/
+
+# Cursor local rules (do not commit to GitHub)
+.cursor/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# VM image / rootfs artifacts
+rootfs/
+*.vhdx
+*.tar.gz
+
+# Screenshots / debug images
+*.png
+*.jpg
+
+# Test probe files
+test_probe.cpp
+
+# Plans / local notes (not tracked)
+plans/
+
+# Editor and OS
+.vs/
+.vscode/
+Thumbs.db
+Desktop.ini
