@@ -131,8 +131,9 @@ void VsockConnection::close()
 class WindowsVsockServer : public VsockServerInterface
 {
 public:
-	explicit WindowsVsockServer(FrameHandler handler)
+	explicit WindowsVsockServer(FrameHandler handler, ConnectionHandler conn_handler)
 	    : handler_(std::move(handler))
+	    , conn_handler_(std::move(conn_handler))
 	{}
 
 	~WindowsVsockServer() override
@@ -151,6 +152,7 @@ private:
 	void handleConnection(SOCKET client_sock);
 
 	FrameHandler          handler_;
+	ConnectionHandler     conn_handler_;
 	SOCKET                listen_sock_ = INVALID_SOCKET;
 	std::atomic<bool>     running_{false};
 	std::thread           accept_thread_;
@@ -177,9 +179,10 @@ bool WindowsVsockServer::createListenSocket(uint32_t vsock_port)
 	SOCKADDR_HV addr{};
 	addr.Family    = AF_HYPERV;
 	addr.Reserved  = 0;
-	// HV_GUID_CHILDREN：接受所有子分区（WSL2 VM 是宿主机的子 Hyper-V 分区）
-	// 不需要动态查询具体 VM GUID，任意已启动的 WSL2 VM 均可连接
-	addr.VmId      = HV_GUID_CHILDREN;
+	// HV_GUID_WILDCARD：接受来自任意 VM 的连接（全零 GUID）
+	// HV_GUID_CHILDREN 在没有运行中的子分区时会导致 listen() 返回 WSAEADDRNOTAVAIL，
+	// 使用 WILDCARD 避免启动时序依赖
+	addr.VmId      = HV_GUID_WILDCARD;
 	addr.ServiceId = vsockPortToServiceId(vsock_port);
 
 	if (::bind(listen_sock_,
@@ -276,6 +279,11 @@ void WindowsVsockServer::handleConnection(SOCKET client_sock)
 	auto impl = std::make_shared<VsockConnectionImpl>(client_sock);
 	VsockConnection conn(impl);
 
+	// 通知上层：VM 连接已建立
+	if (conn_handler_) {
+		conn_handler_(true);
+	}
+
 	while (impl->alive.load() && running_.load()) {
 		// 阶段 1：读 4 字节长度头
 		uint8_t header[4]{};
@@ -310,14 +318,23 @@ void WindowsVsockServer::handleConnection(SOCKET client_sock)
 	}
 
 	conn.close();
+
+	// 通知上层：VM 连接已断开
+	if (conn_handler_) {
+		conn_handler_(false);
+	}
+
 	LOG_INFO("vsock server: VM connection closed");
 }
 
 // ── 工厂函数 ─────────────────────────────────────────────────────────────────
 
-std::unique_ptr<VsockServerInterface> createVsockServer(FrameHandler handler)
+std::unique_ptr<VsockServerInterface> createVsockServer(
+	FrameHandler handler,
+	ConnectionHandler conn_handler)
 {
-	return std::make_unique<WindowsVsockServer>(std::move(handler));
+	return std::make_unique<WindowsVsockServer>(std::move(handler),
+	                                             std::move(conn_handler));
 }
 
 } // namespace vmm

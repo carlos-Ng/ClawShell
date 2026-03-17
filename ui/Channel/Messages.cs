@@ -17,12 +17,21 @@ public class BaseMessage
 	public string Type { get; set; } = string.Empty;
 }
 
-// status 消息 - daemon 推送当前连接状态
+// status 消息 - daemon 推送当前系统状态
 // 连接时立刻发送一次，状态变更时再次发送
 public class StatusMessage : BaseMessage
 {
-	[JsonPropertyName("agent_connected")]
-	public bool AgentConnected { get; set; }
+	// VM 状态: "running" / "stopped" / "starting"
+	[JsonPropertyName("vm")]
+	public string Vm { get; set; } = string.Empty;
+
+	// OpenClaw Gateway 状态: "online" / "offline" / "unknown"
+	[JsonPropertyName("openclaw")]
+	public string OpenClaw { get; set; } = string.Empty;
+
+	// 调用通道状态: "active" / "idle"
+	[JsonPropertyName("channel")]
+	public string Channel { get; set; } = string.Empty;
 }
 
 // task_begin 消息 - 新任务开始

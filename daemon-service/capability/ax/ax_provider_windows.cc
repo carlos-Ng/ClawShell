@@ -637,7 +637,7 @@ static void sendMouseClick(POINT pt, int button, int clicks)
 // 确保 MCP 工具侧的键名无需区分平台。
 static WORD keyNameToVk(const std::string& key)
 {
-	static const std::unordered_map<std::string, WORD> kMap = {
+	static const std::unordered_map<std::string, int> kMap = {
 		{"Return",   VK_RETURN},   {"Enter",    VK_RETURN},
 		{"Escape",   VK_ESCAPE},   {"Esc",      VK_ESCAPE},
 		{"Space",    VK_SPACE},
@@ -667,7 +667,7 @@ static WORD keyNameToVk(const std::string& key)
 	};
 	auto it = kMap.find(key);
 	if (it != kMap.end()) {
-		return it->second;
+		return static_cast<WORD>(it->second);
 	}
 	// 单字符：将 UTF-8 解码为宽字符后使用 VkKeyScanW。
 	// VkKeyScanW 对 ASCII 字符（≤0x7F）与 VkKeyScanA 等价；

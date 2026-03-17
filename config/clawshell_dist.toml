@@ -18,6 +18,22 @@ pipe_path    = "\\\\.\\pipe\\crew-shell-service-ui"
 timeout_mode = "timeout_deny"
 timeout_secs = 60
 
+# ── VsockServer (Channel 3: VM 直连) ───────────────────────────────────────
+
+[vsock]
+port    = 100
+enabled = true
+
+# ── VMM (VM 生命周期管理) ──────────────────────────────────────────────────
+
+[vmm]
+distro_name = "ClawShell"
+# rootfs_path: rootfs tarball 路径（首次自动导入用，留空不自动导入）
+# rootfs_path = ""
+# exe_path: vmm.exe 路径（留空时从 daemon 同目录查找）
+# exe_path = ""
+auto_start  = true
+
 [[modules]]
 name = "capability_ax"
 

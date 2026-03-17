@@ -1,0 +1,8 @@
+# Force LF line endings for shell scripts and Python files
+# regardless of core.autocrlf setting
+*.sh    text eol=lf
+*.py    text eol=lf
+
+# Keep Windows line endings for Visual Studio / MSVC files
+*.sln   text eol=crlf
+*.vcxproj text eol=crlf

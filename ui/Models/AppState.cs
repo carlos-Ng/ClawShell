@@ -21,8 +21,14 @@ public class AppState
 	// Daemon 是否在线（首次收到 status 消息后为 true）
 	public bool DaemonRunning { get; private set; }
 
-	// Agent（MCP 客户端）是否已连接到 daemon
-	public bool AgentConnected { get; private set; }
+	// VM 状态: "running" / "stopped" / "starting"
+	public string VmState { get; private set; } = "stopped";
+
+	// OpenClaw Gateway 状态: "online" / "offline" / "unknown"
+	public string OpenClawState { get; private set; } = "unknown";
+
+	// 调用通道状态: "active" / "idle"
+	public string ChannelState { get; private set; } = "idle";
 
 	// ─────────────────────────────────────────────────────────
 	// 任务状态
@@ -38,7 +44,7 @@ public class AppState
 	// 状态变更事件（在 UI 线程上订阅时需自行 Invoke 回主线程）
 	// ─────────────────────────────────────────────────────────
 
-	// 连接状态变更（ChannelConnected / DaemonRunning / AgentConnected 之一变化时触发）
+	// 连接状态变更（ChannelConnected / DaemonRunning / VmState / OpenClawState / ChannelState 之一变化时触发）
 	public event Action? OnConnectionChanged;
 
 	// 新任务开始
@@ -67,23 +73,27 @@ public class AppState
 			ChannelConnected = connected;
 			if (!connected) {
 				DaemonRunning = false;
-				AgentConnected = false;
+				VmState = "stopped";
+				OpenClawState = "unknown";
+				ChannelState = "idle";
 			}
 		}
 		OnConnectionChanged?.Invoke();
 	}
 
-	// UpdateFromStatus 处理 status 消息，更新 daemon 与 Agent 连接状态。
-	//
-	// 入参:
-	// - agentConnected: Agent 是否已连接。
-	public void UpdateFromStatus(bool agentConnected)
+	// UpdateFromStatus 处理 status 消息，更新三维系统状态。
+	public void UpdateFromStatus(string vm, string openclaw, string channel)
 	{
 		bool changed;
 		lock (_sync) {
-			changed = !DaemonRunning || AgentConnected != agentConnected;
+			changed = !DaemonRunning
+			       || VmState != vm
+			       || OpenClawState != openclaw
+			       || ChannelState != channel;
 			DaemonRunning = true;
-			AgentConnected = agentConnected;
+			VmState = vm;
+			OpenClawState = openclaw;
+			ChannelState = channel;
 		}
 		if (changed) {
 			OnConnectionChanged?.Invoke();

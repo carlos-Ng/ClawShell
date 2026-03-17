@@ -44,6 +44,11 @@ struct UIService::Implement
 	// 加锁顺序规范：write_mutex_ -> pipe_mutex_（严格遵守，防止 ABBA 死锁）。
 	std::mutex write_mutex_;
 
+	// ── OVERLAPPED 写事件 ────────────────────────────────────────────────────
+	// 所有写操作（push / askConfirm / 初始状态推送）共享同一写事件句柄，
+	// 写操作由 write_mutex_ 序列化，保证同一时刻只有一个写操作使用此事件。
+	HANDLE write_event_ = INVALID_HANDLE_VALUE;
+
 	// ── 待处理确认 ────────────────────────────────────────────────────────────
 	using ConfirmPromise = std::promise<UIConfirmResult>;
 	std::map<std::string, ConfirmPromise> pending_confirms_;
@@ -63,6 +68,7 @@ struct UIService::Implement
 	void handleRead(const std::string& frame);
 
 	// writeUnlocked 向当前管道写入一帧 JSON（调用方须已持有 write_mutex_）。
+	// 使用 OVERLAPPED 模式写入，不会被 serviceLoop 的 ReadFile 阻塞。
 	// 写入失败时返回 false（管道未连接或 IO 错误）。
 	bool writeUnlocked(const std::string& json);
 
@@ -77,8 +83,19 @@ struct UIService::Implement
 // ─── Implement 方法实现 ──────────────────────────────────────────────────────
 
 // serviceLoop：接受连接 → 推送状态 → 读取响应 → 断线清理 → 循环。
+//
+// 管道以 FILE_FLAG_OVERLAPPED 模式创建，读取使用 serviceLoop 专属的 read_event，
+// 写入使用共享的 write_event_（由 write_mutex_ 序列化）。
+// 两者使用各自独立的 OVERLAPPED 结构 + Event，互不阻塞。
 void UIService::Implement::serviceLoop()
 {
+	// serviceLoop 专属读事件——只在此线程使用，无需加锁
+	HANDLE read_event = ::CreateEventA(nullptr, TRUE, FALSE, nullptr);
+	if (read_event == nullptr) {
+		LOG_ERROR("ui service: CreateEvent for read failed, error {}", ::GetLastError());
+		return;
+	}
+
 	while (running_.load()) {
 
 		// 为当前连接轮次构建专属安全属性
@@ -89,7 +106,7 @@ void UIService::Implement::serviceLoop()
 
 		HANDLE handle = ::CreateNamedPipeA(
 		    pipe_path_.c_str(),
-		    PIPE_ACCESS_DUPLEX,
+		    PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
 		    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
 		    PIPE_UNLIMITED_INSTANCES,
 		    65536, 65536,
@@ -111,10 +128,33 @@ void UIService::Implement::serviceLoop()
 
 		LOG_DEBUG("ui service: waiting for UI client on {}", pipe_path_);
 
-		BOOL ok = ::ConnectNamedPipe(handle, nullptr);
+		// OVERLAPPED ConnectNamedPipe
+		OVERLAPPED connect_ov = {};
+		connect_ov.hEvent = read_event;
+		::ResetEvent(read_event);
+
+		BOOL ok = ::ConnectNamedPipe(handle, &connect_ov);
 		if (!ok) {
 			DWORD err = ::GetLastError();
-			if (err == ERROR_PIPE_CONNECTED) {
+			if (err == ERROR_IO_PENDING) {
+				// 等待客户端连接
+				DWORD unused = 0;
+				if (!::GetOverlappedResult(handle, &connect_ov, &unused, TRUE)) {
+					DWORD ov_err = ::GetLastError();
+					if (ov_err != ERROR_PIPE_CONNECTED) {
+						if (ov_err != ERROR_OPERATION_ABORTED && ov_err != ERROR_BROKEN_PIPE) {
+							LOG_ERROR("ui service: ConnectNamedPipe overlapped failed, error {}", ov_err);
+						}
+						{
+							std::lock_guard<std::mutex> lk(pipe_mutex_);
+							pipe_handle_ = INVALID_HANDLE_VALUE;
+						}
+						::CloseHandle(handle);
+						if (!running_.load()) break;
+						continue; // 重试
+					}
+				}
+			} else if (err == ERROR_PIPE_CONNECTED) {
 				// 客户端在 ConnectNamedPipe 之前已完成连接，视为成功
 			} else {
 				if (err != ERROR_OPERATION_ABORTED && err != ERROR_BROKEN_PIPE) {
@@ -151,9 +191,9 @@ void UIService::Implement::serviceLoop()
 			writeUnlocked(status_json);
 		}
 
-		// ── 读取循环 ──────────────────────────────────────────────────────────
+		// ── 读取循环（使用 OVERLAPPED 读，不阻塞其他线程的写）────────────────
 		while (running_.load()) {
-			auto result = FrameCodec::readFrame(handle);
+			auto result = FrameCodec::readFrameAsync(handle, read_event);
 			if (result.failure()) {
 				break; // 客户端断线或 stop() 触发 CancelIoEx
 			}
@@ -175,6 +215,7 @@ void UIService::Implement::serviceLoop()
 		::CloseHandle(handle);
 	}
 
+	::CloseHandle(read_event);
 	LOG_DEBUG("ui service: serviceLoop exited");
 }
 
@@ -214,6 +255,7 @@ void UIService::Implement::handleRead(const std::string& frame)
 }
 
 // writeUnlocked：调用方须已持有 write_mutex_。
+// 使用 OVERLAPPED 模式写入，通过 write_event_ 等待完成，不会被 ReadFile 阻塞。
 // 内部短暂获取 pipe_mutex_ 以读取 pipe_handle_（加锁顺序：write -> pipe）。
 bool UIService::Implement::writeUnlocked(const std::string& json)
 {
@@ -225,7 +267,7 @@ bool UIService::Implement::writeUnlocked(const std::string& json)
 	if (h == INVALID_HANDLE_VALUE) {
 		return false;
 	}
-	return FrameCodec::writeFrame(h, json).ok();
+	return FrameCodec::writeFrameAsync(h, json, write_event_).ok();
 }
 
 // cancelAllPendingConfirms：以 {false, false} 兑现所有挂起 promise，然后清空映射。
@@ -246,12 +288,16 @@ std::string UIService::Implement::generateId()
 
 // ─── UIMessageFactory 实现 ───────────────────────────────────────────────────
 
-// createStatus 构造连接状态消息（UI 连接时推送一次，后续状态变更时再推送）。
-std::string UIMessageFactory::createStatus(bool agent_connected)
+// createStatus 构造系统状态消息（UI 连接时推送一次，后续状态变更时再推送）。
+std::string UIMessageFactory::createStatus(const std::string& vm,
+                                           const std::string& openclaw,
+                                           const std::string& channel)
 {
 	return nlohmann::json{
-		{"type",            "status"},
-		{"agent_connected", agent_connected},
+		{"type",     "status"},
+		{"vm",       vm},
+		{"openclaw", openclaw},
+		{"channel",  channel},
 	}.dump();
 }
 
@@ -320,6 +366,12 @@ Status UIService::start(std::string_view                  pipe_path,
 	impl_->timeout_secs_    = timeout_secs;
 	impl_->status_provider_ = std::move(status_provider);
 
+	// 创建写操作专用事件（write_mutex_ 保证同一时刻只有一个写操作使用）
+	impl_->write_event_ = ::CreateEventA(nullptr, TRUE, FALSE, nullptr);
+	if (impl_->write_event_ == nullptr) {
+		return Status(Status::IO_ERROR, "failed to create write event for UIService");
+	}
+
 	impl_->running_.store(true);
 	impl_->service_thread_ = std::thread([this] { impl_->serviceLoop(); });
 
@@ -349,6 +401,12 @@ void UIService::stop()
 		impl_->service_thread_.join();
 	}
 
+	// 清理写事件句柄
+	if (impl_->write_event_ != INVALID_HANDLE_VALUE) {
+		::CloseHandle(impl_->write_event_);
+		impl_->write_event_ = INVALID_HANDLE_VALUE;
+	}
+
 	impl_->connected_.store(false);
 	LOG_INFO("ui service: stopped");
 }
@@ -357,11 +415,14 @@ void UIService::stop()
 void UIService::push(const std::string& json)
 {
 	if (!impl_->connected_.load()) {
+		LOG_INFO("ui service: push() skipped (not connected)");
 		return;
 	}
 	std::lock_guard<std::mutex> lk(impl_->write_mutex_);
 	if (!impl_->writeUnlocked(json)) {
 		LOG_WARN("ui service: push() write failed (client may have just disconnected)");
+	} else {
+		LOG_INFO("ui service: push() delivered {} bytes", json.size());
 	}
 }
 

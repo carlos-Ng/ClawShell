@@ -38,6 +38,12 @@ add_library(tp_spdlog INTERFACE)
 target_include_directories(tp_spdlog INTERFACE
     ${CMAKE_SOURCE_DIR}/third_party/spdlog/include
 )
+# 编译期日志级别下限：允许 SPDLOG_DEBUG / SPDLOG_TRACE 宏正常展开。
+# 默认值 SPDLOG_LEVEL_INFO 会在预处理阶段将 debug/trace 宏置为空操作，
+# 导致运行时 log_level="debug" 配置无效。
+target_compile_definitions(tp_spdlog INTERFACE
+    SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG
+)
 
 add_library(tp_tomlplusplus INTERFACE)
 target_include_directories(tp_tomlplusplus INTERFACE
@@ -131,6 +137,7 @@ target_link_libraries(security_filter PRIVATE clawshell_core clawshell_headers)
 add_executable(crew_shell_service
     daemon-service/daemon/main.cc
     daemon-service/daemon/daemon.cc
+    daemon-service/daemon/vmm_launcher.cc
 )
 target_include_directories(crew_shell_service PRIVATE
     ${CMAKE_SOURCE_DIR}/daemon-service/daemon
@@ -139,6 +146,7 @@ target_include_directories(crew_shell_service PRIVATE
 target_link_libraries(crew_shell_service PRIVATE
     clawshell_core
     clawshell_ipc
+    clawshell_vmm
     clawshell_headers
 )
 target_compile_definitions(crew_shell_service PRIVATE
@@ -203,8 +211,11 @@ add_custom_target(dist
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/config/security_filter_rules.toml"
         "${CLAWSHELL_DIST_DIR}/config/security_filter_rules.toml"
-    COMMENT "Populating dist/ with daemon, dlls and config"
-    DEPENDS crew_shell_service capability_ax security_filter
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:clawshell_vmm_exe>
+        "${CLAWSHELL_DIST_DIR}/bin/vmm${CLAWSHELL_EXE_EXT}"
+    COMMENT "Populating dist/ with daemon, vmm, dlls and config"
+    DEPENDS crew_shell_service clawshell_vmm_exe capability_ax security_filter
 )
 
 if(DOTNET_EXECUTABLE)
