@@ -10,13 +10,21 @@
       - ClawShell daemon + UI + 插件（Windows 侧）
       - ClawShell WSL2 虚拟机（内含 OpenClaw + MCP Server）
 
-    一行命令安装：
+    安装最新版本：
       irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 | iex
 
+    安装指定版本（推荐固定版本时使用）：
+      irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 | iex -Version 0.1.0
+      # 或者直接从该版本的 Release 下载 install.ps1，URL 本身已固定版本：
+      irm https://github.com/carlos-Ng/ClawShell/releases/download/v0.1.0/install.ps1 | iex
+
     Release 资产说明：
-      clawshell-windows.zip    — Windows 侧所有二进制文件（daemon、vmm、ui、dll）
-      clawshell-rootfs.tar.gz  — WSL2 虚拟机镜像（首次安装时下载）
-      install.ps1              — 本安装脚本
+      clawshell-windows-<ver>.zip  — Windows 侧所有二进制文件（daemon、vmm、ui、dll）
+      clawshell-rootfs.tar.gz      — WSL2 虚拟机镜像（首次安装时下载）
+      install.ps1                  — 本安装脚本（每个 Release 各自附带）
+
+.PARAMETER Version
+    指定要安装的版本号（如 0.1.0）。留空则安装最新版。
 
 .PARAMETER Uninstall
     卸载 ClawShell
@@ -29,6 +37,7 @@
 param(
     [switch]$Uninstall,
     [switch]$Upgrade,
+    [string]$Version = "",
     [string]$InstallDir = "",
     [string]$ApiKey = "",
     [string]$ApiProvider = "",
@@ -47,12 +56,20 @@ $DefaultInstDir = Join-Path $env:LOCALAPPDATA $AppName
 $StartupDir     = [Environment]::GetFolderPath("Startup")
 $UninstallRegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppName"
 
-# GitHub Release 配置（发布时替换为真实 URL）
-$DefaultReleaseBase = "https://github.com/carlos-Ng/ClawShell/releases/latest/download"
+# GitHub Release URL 构造
+# - 无 -Version 参数：使用 releases/latest/download/
+# - 有 -Version 参数：使用 releases/download/v<ver>/
+if (-not $ReleaseUrl) {
+    if ($Version) {
+        $DefaultReleaseBase = "https://github.com/carlos-Ng/ClawShell/releases/download/v$Version"
+    } else {
+        $DefaultReleaseBase = "https://github.com/carlos-Ng/ClawShell/releases/latest/download"
+    }
+}
 
 # Release 资产（zip 包含所有 Windows 二进制，rootfs 单独打包以便升级时跳过）
-$WindowsZipName = "clawshell-windows.zip"
-$RootfsName     = "clawshell-rootfs.tar.gz"
+# zip 文件名含版本号，从 Release URL 推断：latest 时在下载前解析实际版本
+$RootfsName = "clawshell-rootfs.tar.gz"
 
 # zip 包内的文件列表（用于安装验证）
 $WindowsBinFiles = @(
@@ -277,6 +294,29 @@ function Invoke-Download {
             exit 1
         }
     }
+}
+
+# 解析实际版本号（用于构造带版本号的 zip 文件名）
+# 指定了 -Version 则直接使用；否则通过 GitHub API 查询 latest release tag
+$ResolvedVersion = $Version
+if (-not $ResolvedVersion) {
+    Write-Step "查询最新版本号 ..."
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $apiResp = Invoke-RestMethod -Uri "https://api.github.com/repos/carlos-Ng/ClawShell/releases/latest" -ErrorAction Stop
+        $ResolvedVersion = $apiResp.tag_name -replace '^v', ''
+        Write-Ok "最新版本: $ResolvedVersion"
+    } catch {
+        Write-Warn "无法查询 GitHub API，将直接尝试下载（需要网络可访问 GitHub）"
+        $ResolvedVersion = "latest"
+    }
+}
+
+# zip 文件名含版本号（与 CMake release target 输出一致）
+$WindowsZipName = if ($ResolvedVersion -eq "latest") {
+    "clawshell-windows.zip"
+} else {
+    "clawshell-windows-$ResolvedVersion.zip"
 }
 
 # 下载 Windows 二进制 zip 包（升级和全新安装都需要）
@@ -649,7 +689,7 @@ New-Item -Path $UninstallRegKey -Force | Out-Null
 $uninstallCmd = "powershell.exe -ExecutionPolicy Bypass -Command `"& { irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 | iex } -Uninstall`""
 
 Set-ItemProperty -Path $UninstallRegKey -Name "DisplayName"     -Value $AppName
-Set-ItemProperty -Path $UninstallRegKey -Name "DisplayVersion"  -Value "0.1.0"
+Set-ItemProperty -Path $UninstallRegKey -Name "DisplayVersion"  -Value $ResolvedVersion
 Set-ItemProperty -Path $UninstallRegKey -Name "Publisher"       -Value "ClawShell"
 Set-ItemProperty -Path $UninstallRegKey -Name "InstallLocation" -Value $InstallDir
 Set-ItemProperty -Path $UninstallRegKey -Name "UninstallString" -Value $uninstallCmd

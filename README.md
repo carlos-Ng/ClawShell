@@ -59,7 +59,14 @@ wsl --install --no-distribution
 在 **PowerShell** 中执行（无需管理员权限）：
 
 ```powershell
+# 安装最新版本
 irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 | iex
+
+# 安装指定版本
+irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 | iex -Version 0.1.0
+
+# 或直接下载该版本的安装脚本（URL 本身固定了版本，无需 -Version 参数）
+irm https://github.com/carlos-Ng/ClawShell/releases/download/v0.1.0/install.ps1 | iex
 ```
 
 安装程序会自动完成：检查 WSL2、下载组件、导入 VM 镜像、配置 AI 后端、生成 Gateway Token、配置开机自启并启动 ClawShell。安装结束后终端会显示 OpenClaw WebUI 地址与 Token。
@@ -67,7 +74,7 @@ irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 
 ### 升级与卸载
 
 ```powershell
-# 升级（保留数据）
+# 升级到最新版（保留数据）
 irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 | iex -Upgrade
 
 # 卸载
@@ -183,6 +190,10 @@ cmake --build build
 
 # 生成 dist 发布目录（exe + dll + config）
 cmake --build build --target dist
+
+# 打包 Release zip（供 GitHub Release 上传）
+cmake --build build --target release
+# 输出：clawshell-windows-<version>.zip（位于项目根目录）
 ```
 
 ### 构建产物
@@ -262,6 +273,16 @@ bash scripts/build-rootfs.sh
 ```
 
 生成 `clawshell-rootfs.tar.gz`，上传到 GitHub Release 供 `install.ps1` 下载。
+
+### 发布 Release
+
+每次发布时，将以下文件上传到 GitHub Release（tag 格式：`v<version>`）：
+
+| 文件 | 来源 |
+|------|------|
+| `clawshell-windows-<ver>.zip` | `cmake --build build --target release` 生成 |
+| `clawshell-rootfs.tar.gz` | `bash scripts/build-rootfs.sh` 生成 |
+| `install.ps1` | `scripts/install.ps1` |
 
 ---
 

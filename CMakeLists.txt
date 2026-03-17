@@ -232,6 +232,30 @@ if(DOTNET_EXECUTABLE)
     add_dependencies(dist clawshell_ui)
 endif()
 
+# ─── Release 打包 ────────────────────────────────────────────────────────────
+#
+# 将 dist/bin/ 下所有文件打包为 clawshell-windows-<version>.zip。
+# 用法：cmake --build build --target release
+#
+# 输出：${CMAKE_SOURCE_DIR}/clawshell-windows-${PROJECT_VERSION}.zip
+# 依赖：dist（须先运行 --target dist）
+
+if(WIN32)
+    set(CLAWSHELL_WINDOWS_ZIP
+        "${CMAKE_SOURCE_DIR}/clawshell-windows-${PROJECT_VERSION}.zip"
+    )
+
+    add_custom_target(release
+        COMMAND ${CMAKE_COMMAND} -E echo "Packaging ${CLAWSHELL_WINDOWS_ZIP} ..."
+        COMMAND powershell -NoProfile -NonInteractive -Command
+            "Compress-Archive -Path '${CLAWSHELL_DIST_DIR}/bin/*' -DestinationPath '${CLAWSHELL_WINDOWS_ZIP}' -Force"
+        COMMAND ${CMAKE_COMMAND} -E echo "Done: ${CLAWSHELL_WINDOWS_ZIP}"
+        DEPENDS dist
+        COMMENT "Creating clawshell-windows-${PROJECT_VERSION}.zip from dist/bin/"
+        VERBATIM
+    )
+endif()
+
 # ─── Tests ───────────────────────────────────────────────────────────────────
 
 option(BUILD_TESTS "Build test programs" OFF)
