@@ -11,6 +11,9 @@ ui/obj/
 # Claude project metadata
 .claude/
 
+# Cursor local rules (do not commit to GitHub)
+.cursor/
+
 # Python cache
 __pycache__/
 *.pyc
