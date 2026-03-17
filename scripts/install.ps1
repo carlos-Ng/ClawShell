@@ -290,9 +290,30 @@ if (-not $ReleaseUrl) { $ReleaseUrl = $DefaultReleaseBase }
 
 New-Item -ItemType Directory -Path $DownloadDir -Force | Out-Null
 
+function Get-RemoteFileSize {
+    param([string]$Url)
+    # HEAD 请求（-I），静默（-s），跟随重定向（-L）；取最后一个 Content-Length（302 链可能出现多次）
+    $output = & $CurlExe -s -I -L $Url 2>&1
+    $expectedSize = [long]-1
+    foreach ($line in $output) {
+        if ($line -match "(?i)^content-length:\s*(\d+)") {
+            $expectedSize = [long]$Matches[1]
+        }
+    }
+    return $expectedSize
+}
+
 function Invoke-Download {
     param([string]$Url, [string]$Dest, [string]$Desc)
-    Write-Step "下载 $Desc ..."
+
+    # 获取远端文件大小，用于下载后校验
+    $expectedSize = Get-RemoteFileSize -Url $Url
+    if ($expectedSize -gt 0) {
+        $sizeMB = [math]::Round($expectedSize / 1MB, 1)
+        Write-Step "下载 $Desc ($sizeMB MB) ..."
+    } else {
+        Write-Step "下载 $Desc ..."
+    }
     Write-Host ""
     # -L  跟随重定向（GitHub Release 有 302 跳转）
     # -#  进度条模式
@@ -311,6 +332,21 @@ function Invoke-Download {
         Write-Host ""
         exit 1
     }
+
+    # 文件大小校验（防止网络中断导致文件不完整但 curl 退出码为 0 的情况）
+    if ($expectedSize -gt 0) {
+        $actualSize = (Get-Item $Dest).Length
+        if ($actualSize -ne $expectedSize) {
+            Write-Err "文件完整性校验失败: $Desc"
+            Write-Err "  期望大小: $expectedSize 字节，实际大小: $actualSize 字节"
+            Write-Host ""
+            Write-Host "  文件下载不完整。请删除残留文件后重新运行脚本（会自动断点续传）：" -ForegroundColor Yellow
+            Write-Host "    Remove-Item '$Dest'" -ForegroundColor White
+            Write-Host ""
+            exit 1
+        }
+    }
+
     Write-Ok $Desc
 }
 
