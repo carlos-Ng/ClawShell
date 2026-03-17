@@ -194,7 +194,9 @@ if ($osVersion.Build -lt 19041) {
 Write-Ok "Windows 版本: $($osVersion.ToString())"
 
 # curl.exe（下载工具，Windows 10 17063+ 自带）
-$CurlExe = (Get-Command "curl.exe" -ErrorAction SilentlyContinue)?.Source
+$CurlExe = $null
+$_curlCmd = Get-Command "curl.exe" -ErrorAction SilentlyContinue
+if ($_curlCmd) { $CurlExe = $_curlCmd.Source }
 if (-not $CurlExe) {
     Write-Err "未找到 curl.exe"
     Write-Host ""
