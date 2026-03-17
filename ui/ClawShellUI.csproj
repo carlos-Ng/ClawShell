@@ -6,7 +6,7 @@
 		<UseWindowsForms>true</UseWindowsForms>
 		<Nullable>enable</Nullable>
 		<ImplicitUsings>disable</ImplicitUsings>
-		<AssemblyName>ClawShellUI</AssemblyName>
+		<AssemblyName>claw_shell_ui</AssemblyName>
 		<RootNamespace>ClawShellUI</RootNamespace>
 		<AllowUnsafeBlocks>false</AllowUnsafeBlocks>
 		<!-- 发布命令: dotnet publish -r win-x64 -c Release -p:PublishSingleFile=true -p:SelfContained=true -->
