@@ -147,11 +147,15 @@ OpenClaw (VM)
 // ~/.openclaw/openclaw.json
 {
   "plugins": {
-    "acpx": {
-      "mcpServers": {
-        "clawshell-gui": {
-          "command": "python3",
-          "args": ["/path/to/clawshell/mcp/server/mcp_server.py"]
+    "entries": {
+      "acpx": {
+        "config": {
+          "mcpServers": {
+            "clawshell-gui": {
+              "command": "python3",
+              "args": ["/path/to/clawshell/mcp/server/mcp_server.py"]
+            }
+          }
         }
       }
     }

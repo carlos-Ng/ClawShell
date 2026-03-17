@@ -164,12 +164,19 @@ public class MainForm : Form
 		} else if (!state.DaemonRunning) {
 			_statusBarLabel.Text      = "正在连接…";
 			_statusBarLabel.ForeColor = Color.FromArgb(140, 100, 0);
-		} else if (!state.AgentConnected) {
-			_statusBarLabel.Text      = "Daemon 运行中 · 等待 Agent 连接";
-			_statusBarLabel.ForeColor = Color.FromArgb(80, 80, 80);
-		} else {
-			_statusBarLabel.Text      = "● Daemon 运行中 · Agent 已连接";
+		} else if (state.VmState == "starting") {
+			_statusBarLabel.Text      = "Daemon 运行中 · VM 启动中";
+			_statusBarLabel.ForeColor = Color.FromArgb(140, 100, 0);
+		} else if (state.VmState != "running") {
+			_statusBarLabel.Text      = "Daemon 运行中 · VM 已停止";
+			_statusBarLabel.ForeColor = Color.FromArgb(180, 60, 60);
+		} else if (state.OpenClawState == "online") {
+			var channelText = state.ChannelState == "active" ? " · 工作中" : "";
+			_statusBarLabel.Text      = $"● 就绪{channelText}";
 			_statusBarLabel.ForeColor = Color.FromArgb(40, 120, 40);
+		} else {
+			_statusBarLabel.Text      = "VM 运行中 · OpenClaw 离线";
+			_statusBarLabel.ForeColor = Color.FromArgb(80, 80, 80);
 		}
 	}
 

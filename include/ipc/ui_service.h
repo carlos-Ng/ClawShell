@@ -61,9 +61,16 @@ struct UIConfirmResult
 class UIMessageFactory
 {
 public:
-    // createStatus 构造连接状态消息。
+    // createStatus 构造系统状态消息。
     // UI 连接时 daemon 立即推送一次，此后状态变更时再次推送。
-    static std::string createStatus(bool agent_connected);
+    //
+    // 入参:
+    // - vm:       VM 状态 ("running" / "stopped" / "starting")
+    // - openclaw: OpenClaw 状态 ("online" / "offline" / "unknown")
+    // - channel:  调用通道状态 ("active" / "idle")
+    static std::string createStatus(const std::string& vm,
+                                    const std::string& openclaw,
+                                    const std::string& channel);
 
     // createTaskBegin 构造任务开始消息。
     // 由 daemon 在收到 Channel 1 的 beginTask 消息后调用。

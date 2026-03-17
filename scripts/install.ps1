@@ -27,7 +27,9 @@ param(
     [string]$InstallDir = "",
     [string]$ApiKey = "",
     [string]$ApiProvider = "",
-    [string]$ReleaseUrl = ""
+    [string]$ReleaseUrl = "",
+    [string]$LocalModelUrl = "",
+    [string]$LocalModelId = ""
 )
 
 # ── 配置 ─────────────────────────────────────────────────────────────────
@@ -47,6 +49,7 @@ $DefaultReleaseBase = "https://github.com/user/ClawShell/releases/latest/downloa
 $ReleaseFiles = @(
     @{ Name = "clawshell-rootfs.tar.gz";  Desc = "VM 镜像" }
     @{ Name = "crew_shell_service.exe";   Desc = "Daemon" }
+    @{ Name = "vmm.exe";                  Desc = "VM 管理器" }
     @{ Name = "ClawShellUI.exe";          Desc = "托盘 UI" }
     @{ Name = "capability_ax.dll";        Desc = "GUI 自动化插件" }
     @{ Name = "security_filter.dll";      Desc = "安全过滤插件" }
@@ -290,17 +293,64 @@ if (-not $isUpgrade) {
         Write-Host "  选择 AI 模型提供商：" -ForegroundColor White
         Write-Host "    1) Anthropic (Claude)  — 推荐" -ForegroundColor White
         Write-Host "    2) OpenAI (GPT)" -ForegroundColor White
-        Write-Host "    3) 其他（稍后在 OpenClaw WebUI 中配置）" -ForegroundColor White
-        $providerChoice = Read-Host "  请选择 (1/2/3)"
+        Write-Host "    3) 本地模型 (llama.cpp / Ollama / OpenAI 兼容)" -ForegroundColor White
+        Write-Host "    4) 其他（稍后在 OpenClaw WebUI 中配置）" -ForegroundColor White
+        $providerChoice = Read-Host "  请选择 (1/2/3/4)"
         switch ($providerChoice) {
             "1" { $ApiProvider = "anthropic" }
             "2" { $ApiProvider = "openai" }
+            "3" { $ApiProvider = "local" }
             default { $ApiProvider = "skip" }
         }
     }
 
-    # API Key
-    if ($ApiProvider -ne "skip" -and -not $ApiKey) {
+    # Local Model 配置
+    if ($ApiProvider -eq "local") {
+        Write-Host ""
+        Write-Host "  ┌─────────────────────────────────────────────┐" -ForegroundColor Cyan
+        Write-Host "  │  本地模型配置                               │" -ForegroundColor Cyan
+        Write-Host "  │                                             │" -ForegroundColor Cyan
+        Write-Host "  │  支持所有 OpenAI 兼容 API 的推理服务：      │" -ForegroundColor Cyan
+        Write-Host "  │    • llama.cpp (--host 0.0.0.0 -p 8080)    │" -ForegroundColor Cyan
+        Write-Host "  │    • Ollama (http://host:11434)             │" -ForegroundColor Cyan
+        Write-Host "  │    • vLLM / SGLang / LocalAI / LM Studio   │" -ForegroundColor Cyan
+        Write-Host "  └─────────────────────────────────────────────┘" -ForegroundColor Cyan
+        Write-Host ""
+
+        if (-not $LocalModelUrl) {
+            Write-Host "  请输入模型服务地址" -ForegroundColor White
+            Write-Host "  示例: http://192.168.1.100:8080  (llama.cpp)" -ForegroundColor DarkGray
+            Write-Host "  示例: http://192.168.1.100:11434 (Ollama)" -ForegroundColor DarkGray
+            $LocalModelUrl = Read-Host "  模型服务地址"
+        }
+
+        if (-not $LocalModelUrl) {
+            Write-Warn "未输入模型地址，稍后可在 OpenClaw WebUI 中配置"
+            $ApiProvider = "skip"
+        } else {
+            # 自动检测 Ollama vs OpenAI 兼容
+            $isOllama = $LocalModelUrl -match ":11434"
+
+            if (-not $LocalModelId) {
+                Write-Host ""
+                Write-Host "  请输入模型 ID（留空使用默认值）" -ForegroundColor White
+                if ($isOllama) {
+                    Write-Host "  示例: qwen3.5:27b, glm-4.7-flash, deepseek-r1:32b" -ForegroundColor DarkGray
+                    $defaultModelId = "glm-4.7-flash"
+                } else {
+                    Write-Host "  示例: qwen3.5, glm-4.7, llama-3.3-70b" -ForegroundColor DarkGray
+                    $defaultModelId = "default"
+                }
+                $LocalModelId = Read-Host "  模型 ID (默认: $defaultModelId)"
+                if (-not $LocalModelId) { $LocalModelId = $defaultModelId }
+            }
+
+            Write-Ok "本地模型配置就绪 ($LocalModelUrl → $LocalModelId)"
+        }
+    }
+
+    # API Key（云端提供商）
+    if ($ApiProvider -in @("anthropic", "openai") -and -not $ApiKey) {
         Write-Host ""
         if ($ApiProvider -eq "anthropic") {
             Write-Host "  请输入 Anthropic API Key" -ForegroundColor White
@@ -339,7 +389,7 @@ Start-Sleep -Seconds 1
 
 # 复制可执行文件
 Write-Step "安装程序文件 ..."
-$binFiles = @("crew_shell_service.exe", "ClawShellUI.exe", "capability_ax.dll", "security_filter.dll")
+$binFiles = @("crew_shell_service.exe", "vmm.exe", "ClawShellUI.exe", "capability_ax.dll", "security_filter.dll")
 foreach ($f in $binFiles) {
     $src = Join-Path $DownloadDir $f
     if (Test-Path $src) {
@@ -381,6 +431,14 @@ install_dir = "$($InstallDir -replace '\\', '\\\\')"
 pipe_name = "clawshell-service"
 ui_pipe_name = "clawshell-service-ui"
 
+[vsock]
+port    = 100
+enabled = true
+
+[vmm]
+distro_name = "$DistroName"
+auto_start  = true
+
 [modules]
 capability_dirs = ["$($BinDir -replace '\\', '\\\\')"]
 security_dirs = ["$($BinDir -replace '\\', '\\\\')"]
@@ -390,15 +448,33 @@ Set-Content -Path (Join-Path $ConfigDir "daemon.toml") -Value $daemonConfig -Enc
 Write-Ok "daemon.toml"
 
 # OpenClaw 配置（写入 WSL 内部）
-if (-not $isUpgrade -and $ApiProvider -ne "skip") {
-    # 构建 OpenClaw 配置 JSON
+# 生成 Gateway 访问令牌（每次安装唯一，避免默认口令漏洞）
+$GatewayToken = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 32 | ForEach-Object { [char]$_ })
+$GatewayPort = 18789
+
+if (-not $isUpgrade) {
+    # 构建 OpenClaw 配置 JSON（含 gateway 认证配置）
     $openclawConfig = @{
+        gateway = @{
+            port = $GatewayPort
+            mode = "local"
+            bind = "lan"
+            auth = @{
+                mode = "token"
+                token = $GatewayToken
+            }
+        }
         plugins = @{
-            acpx = @{
-                mcpServers = @{
-                    "clawshell-gui" = @{
-                        command = "python3"
-                        args = @("/opt/clawshell/mcp/mcp_server.py")
+            entries = @{
+                acpx = @{
+                    enabled = $true
+                    config = @{
+                        mcpServers = @{
+                            "clawshell-gui" = @{
+                                command = "python3"
+                                args = @("/opt/clawshell/mcp/mcp_server.py")
+                            }
+                        }
                     }
                 }
             }
@@ -410,11 +486,90 @@ if (-not $isUpgrade -and $ApiProvider -ne "skip") {
         }
     }
 
+    # 本地模型配置：注入 models.providers
+    if ($ApiProvider -eq "local" -and $LocalModelUrl) {
+        $isOllama = $LocalModelUrl -match ":11434"
+
+        if ($isOllama) {
+            # Ollama: 使用原生 API，自动发现模型
+            $ollamaBaseUrl = $LocalModelUrl -replace '/v1$', ''  # 去掉 /v1
+            $openclawConfig["models"] = @{
+                providers = @{
+                    ollama = @{
+                        baseUrl = $ollamaBaseUrl
+                        apiKey  = "ollama-local"
+                        api     = "ollama"
+                        models  = @(
+                            @{
+                                id            = $LocalModelId
+                                name          = $LocalModelId
+                                reasoning     = ([bool]($LocalModelId -match 'r1|reason|think'))
+                                input         = @("text")
+                                cost          = @{ input = 0; output = 0; cacheRead = 0; cacheWrite = 0 }
+                                contextWindow = 131072
+                                maxTokens     = 8192
+                            }
+                        )
+                    }
+                }
+            }
+            $openclawConfig["agents"] = @{
+                defaults = @{
+                    model = @{ primary = "ollama/$LocalModelId" }
+                }
+            }
+        } else {
+            # llama.cpp / vLLM / 其他 OpenAI 兼容服务
+            $apiBaseUrl = $LocalModelUrl.TrimEnd('/')
+            if ($apiBaseUrl -notmatch '/v1$') { $apiBaseUrl += "/v1" }
+
+            $isQwen = $LocalModelId -match 'qwen'
+            $modelCompat = @{}
+            if ($isQwen) {
+                $modelCompat["thinkingFormat"] = "qwen"
+            }
+
+            $modelDef = @{
+                id            = $LocalModelId
+                name          = $LocalModelId
+                reasoning     = ([bool]($LocalModelId -match 'r1|reason|think|qwen'))
+                input         = @("text")
+                cost          = @{ input = 0; output = 0; cacheRead = 0; cacheWrite = 0 }
+                contextWindow = 32768
+                maxTokens     = 8192
+            }
+            if ($modelCompat.Count -gt 0) {
+                $modelDef["compat"] = $modelCompat
+            }
+
+            $openclawConfig["models"] = @{
+                providers = @{
+                    local_llm = @{
+                        baseUrl                   = $apiBaseUrl
+                        apiKey                    = "no-key"
+                        api                       = "openai-completions"
+                        injectNumCtxForOpenAICompat = $false
+                        models                    = @( $modelDef )
+                    }
+                }
+            }
+            $openclawConfig["agents"] = @{
+                defaults = @{
+                    model = @{ primary = "local_llm/$LocalModelId" }
+                }
+            }
+        }
+    }
+
     $configJson = $openclawConfig | ConvertTo-Json -Depth 10
 
     # 写入 WSL 文件系统
     $configJson | wsl -d $DistroName -- bash -c 'cat > /home/clawshell/.openclaw/openclaw.json'
 
+    Write-Ok "OpenClaw 配置（含 Gateway 令牌）"
+}
+
+if (-not $isUpgrade -and $ApiProvider -in @("anthropic", "openai")) {
     # 写入 API Key（通过环境变量文件）
     if ($ApiProvider -eq "anthropic") {
         $envContent = "export ANTHROPIC_API_KEY=`"$ApiKey`""
@@ -431,6 +586,40 @@ if (-not $isUpgrade -and $ApiProvider -ne "skip") {
 
     Write-Ok "OpenClaw API 配置"
 }
+
+if (-not $isUpgrade -and $ApiProvider -eq "local" -and $LocalModelUrl -match ":11434") {
+    # Ollama 需要设置 OLLAMA_API_KEY 环境变量（任意值即可）
+    $envContent = "export OLLAMA_API_KEY=`"ollama-local`""
+
+    $envContent | wsl -d $DistroName -- bash -c 'cat > /home/clawshell/.clawshell-env'
+    wsl -d $DistroName -- bash -c 'chown clawshell:clawshell /home/clawshell/.clawshell-env && chmod 600 /home/clawshell/.clawshell-env'
+
+    $bashrcLine = '[[ -f ~/.clawshell-env ]] && source ~/.clawshell-env'
+    $bashrcLine | wsl -d $DistroName -- bash -c 'grep -qF ".clawshell-env" /home/clawshell/.bashrc 2>/dev/null || cat >> /home/clawshell/.bashrc'
+
+    Write-Ok "Ollama 环境变量配置"
+}
+
+# 安装 OpenClaw Gateway 为 systemd 用户服务（VM 启动时自动运行 WebUI）
+Write-Step "安装 OpenClaw Gateway 服务 ..."
+try {
+    wsl -d $DistroName -- su -l clawshell -c "openclaw daemon install 2>&1" | Out-Null
+    Write-Ok "OpenClaw Gateway 已注册为 systemd 服务"
+} catch {
+    Write-Warn "OpenClaw Gateway 服务注册失败，可稍后手动执行: wsl -d $DistroName -- su -l clawshell -c 'openclaw daemon install'"
+}
+
+# 保存 Gateway 令牌到本地文件（方便用户后续查看）
+$tokenFilePath = Join-Path $ConfigDir "gateway-token.txt"
+@"
+# ClawShell OpenClaw Gateway 访问令牌
+# 请妥善保管，切勿泄露
+#
+# WebUI 地址: http://localhost:$GatewayPort
+# 访问令牌:
+$GatewayToken
+"@ | Set-Content -Path $tokenFilePath -Encoding UTF8
+Write-Ok "Gateway 令牌已保存至 $tokenFilePath"
 
 # ── 注册开机启动 ─────────────────────────────────────────────────────────
 
@@ -503,10 +692,33 @@ Write-Host "  安装路径:   $InstallDir" -ForegroundColor White
 Write-Host "  WSL Distro: $DistroName" -ForegroundColor White
 Write-Host ""
 
+# OpenClaw WebUI 访问信息（醒目展示）
+Write-Host "  ┌──────────────────────────────────────────────┐" -ForegroundColor Cyan
+Write-Host "  │  OpenClaw WebUI                              │" -ForegroundColor Cyan
+Write-Host "  │                                              │" -ForegroundColor Cyan
+Write-Host "  │  地址:  http://localhost:$GatewayPort            │" -ForegroundColor Cyan
+Write-Host "  │  令牌:  $GatewayToken  │" -ForegroundColor Cyan
+Write-Host "  │                                              │" -ForegroundColor Cyan
+Write-Host "  │  在浏览器中打开上述地址，输入令牌即可使用    │" -ForegroundColor Cyan
+Write-Host "  └──────────────────────────────────────────────┘" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  令牌已保存至: $tokenFilePath" -ForegroundColor DarkGray
+Write-Host ""
+
 if ($ApiProvider -eq "skip" -or $isUpgrade) {
-    Write-Host "  API Key 未配置，请通过 OpenClaw WebUI 设置：" -ForegroundColor Yellow
-    Write-Host "    在 WSL 中运行: wsl -d $DistroName" -ForegroundColor White
-    Write-Host "    然后执行: openclaw" -ForegroundColor White
+    Write-Host "  API Key 未配置，请在 WebUI 中设置" -ForegroundColor Yellow
+    Write-Host ""
+}
+
+if ($ApiProvider -eq "local" -and $LocalModelUrl) {
+    Write-Host "  ┌──────────────────────────────────────────────┐" -ForegroundColor Magenta
+    Write-Host "  │  本地模型                                    │" -ForegroundColor Magenta
+    Write-Host "  │                                              │" -ForegroundColor Magenta
+    Write-Host "  │  服务地址: $($LocalModelUrl.PadRight(35))│" -ForegroundColor Magenta
+    Write-Host "  │  模型 ID:  $($LocalModelId.PadRight(35))│" -ForegroundColor Magenta
+    Write-Host "  │                                              │" -ForegroundColor Magenta
+    Write-Host "  │  请确保模型服务已启动并可从 WSL 访问         │" -ForegroundColor Magenta
+    Write-Host "  └──────────────────────────────────────────────┘" -ForegroundColor Magenta
     Write-Host ""
 }
 

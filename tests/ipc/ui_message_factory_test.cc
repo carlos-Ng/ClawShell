@@ -19,20 +19,24 @@ using json = nlohmann::json;
 
 // ── createStatus ────────────────────────────────────────────────────────────
 
-TEST(UIMessageFactoryStatus, AgentConnectedTrue)
+TEST(UIMessageFactoryStatus, AllFieldsPresent)
 {
-	auto msg = UIMessageFactory::createStatus(true);
+	auto msg = UIMessageFactory::createStatus("running", "online", "idle");
 	auto j = json::parse(msg);
 	EXPECT_EQ(j["type"], "status");
-	EXPECT_EQ(j["agent_connected"], true);
+	EXPECT_EQ(j["vm"], "running");
+	EXPECT_EQ(j["openclaw"], "online");
+	EXPECT_EQ(j["channel"], "idle");
 }
 
-TEST(UIMessageFactoryStatus, AgentConnectedFalse)
+TEST(UIMessageFactoryStatus, StoppedState)
 {
-	auto msg = UIMessageFactory::createStatus(false);
+	auto msg = UIMessageFactory::createStatus("stopped", "offline", "active");
 	auto j = json::parse(msg);
 	EXPECT_EQ(j["type"], "status");
-	EXPECT_EQ(j["agent_connected"], false);
+	EXPECT_EQ(j["vm"], "stopped");
+	EXPECT_EQ(j["openclaw"], "offline");
+	EXPECT_EQ(j["channel"], "active");
 }
 
 // ── createTaskBegin ─────────────────────────────────────────────────────────
@@ -116,8 +120,8 @@ TEST(UIMessageFactoryOpLog, EmptyDetail)
 
 TEST(UIMessageFactoryJSON, AllMethodsProduceValidJSON)
 {
-	EXPECT_NO_THROW((void)json::parse(UIMessageFactory::createStatus(true)));
-	EXPECT_NO_THROW((void)json::parse(UIMessageFactory::createStatus(false)));
+	EXPECT_NO_THROW((void)json::parse(UIMessageFactory::createStatus("running", "online", "idle")));
+	EXPECT_NO_THROW((void)json::parse(UIMessageFactory::createStatus("stopped", "offline", "active")));
 	EXPECT_NO_THROW((void)json::parse(UIMessageFactory::createTaskBegin("t", "d")));
 	EXPECT_NO_THROW((void)json::parse(UIMessageFactory::createTaskEnd("t")));
 	EXPECT_NO_THROW((void)json::parse(UIMessageFactory::createOpLog("t", "o", "r", "s", "d", 0)));

@@ -33,7 +33,7 @@ CHECKPOINT_FILE="$CACHE_DIR/checkpoint.tar.gz"
 CHECKPOINT_STAGE_FILE="$CACHE_DIR/checkpoint.stage"
 
 # debootstrap --include
-DEBOOTSTRAP_INCLUDE="systemd,systemd-sysv,dbus,ca-certificates,curl,wget,gnupg,git,locales,procps,iproute2,iputils-ping,less,vim-tiny,sudo"
+DEBOOTSTRAP_INCLUDE="systemd,systemd-sysv,dbus,dbus-user-session,libpam-systemd,ca-certificates,curl,wget,gnupg,git,locales,procps,iproute2,iputils-ping,less,vim-tiny,sudo"
 
 # ClawShell 源码目录
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -593,9 +593,15 @@ if ! run_stage 5 "OpenClaw"; then
 
         # openclaw 依赖需要 git（chroot 隔离，宿主的 git 不可见）
         apt-get update -qq
-        apt-get install -y -qq git build-essential python3-dev
+        apt-get install -y -qq git build-essential python3-dev lsof
 
         pnpm add -g openclaw@latest
+
+        # 修复 acpx 扩展目录权限（pnpm 全局安装为 root，acpx 需要写入 node_modules）
+        OPENCLAW_DIR=\$(pnpm root -g)/openclaw
+        if [[ -d \"\$OPENCLAW_DIR/extensions/acpx\" ]]; then
+            chown -R $CLAWSHELL_USER:$CLAWSHELL_USER \"\$OPENCLAW_DIR/extensions/acpx\"
+        fi
 
         # 严格验证
         if ! command -v openclaw &>/dev/null; then
@@ -635,12 +641,25 @@ if ! run_stage 6 "ClawShell MCP Server"; then
     mkdir -p "$OPENCLAW_CONF_DIR"
     cat > "$OPENCLAW_CONF_DIR/openclaw.json" <<CONF
 {
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "lan",
+    "auth": {
+      "mode": "token"
+    }
+  },
   "plugins": {
-    "acpx": {
-      "mcpServers": {
-        "clawshell-gui": {
-          "command": "python3",
-          "args": ["$MCP_INSTALL_DIR/mcp_server.py"]
+    "entries": {
+      "acpx": {
+        "enabled": true,
+        "config": {
+          "mcpServers": {
+            "clawshell-gui": {
+              "command": "python3",
+              "args": ["$MCP_INSTALL_DIR/mcp_server.py"]
+            }
+          }
         }
       }
     }
@@ -655,6 +674,10 @@ CONF
 
     chroot "$ROOTFS_DIR" chown -R "$CLAWSHELL_USER:$CLAWSHELL_USER" "/home/$CLAWSHELL_USER/.openclaw"
 
+    # 启用 linger，确保 systemd user 服务在 VM 启动时自动运行（无需用户登录）
+    mkdir -p "$ROOTFS_DIR/var/lib/systemd/linger"
+    touch "$ROOTFS_DIR/var/lib/systemd/linger/$CLAWSHELL_USER"
+
     # WSL 配置
     cat > "$ROOTFS_DIR/etc/wsl.conf" <<WSL
 [user]
@@ -662,6 +685,7 @@ default=$CLAWSHELL_USER
 
 [boot]
 systemd=true
+command=/bin/bash -c 'loginctl enable-linger $CLAWSHELL_USER 2>/dev/null; true'
 
 [network]
 generateResolvConf=true

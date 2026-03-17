@@ -1,9 +1,11 @@
 #include "daemon.h"
+#include "vmm_launcher.h"
 
 #include "core/base/service.h"
 #include "core/task_registry.h"
 #include "ipc/ui_service.h"
 #include "ipc/windows_ipc_server.h"
+#include "vmm/vsock_server.h"
 
 #include "common/log.h"
 
@@ -18,7 +20,13 @@
 #include <thread>
 
 #ifdef _WIN32
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
 #  include <windows.h>
+#  pragma comment(lib, "ws2_32.lib")
 #else
 #  error "Platform not supported: add POSIX sys/socket.h/sys/un.h implementation here"
 #endif
@@ -58,8 +66,198 @@ struct Daemon::Implement
 	core::TaskRegistry       task_registry_;
 	ipc::WindowsIpcServer    ipc_server_;
 	ipc::UIService           ui_service_;
+	std::unique_ptr<vmm::VsockServerInterface> vsock_server_;
+	VmmLauncher              vmm_launcher_;
 	DaemonConfig             config_;
 	std::atomic<bool>        running_{false};
+
+	// ── 系统状态（UI status 三维模型）──────────────────────────
+	std::mutex               status_mutex_;
+	std::string              vm_state_      = "stopped";   // running / stopped / starting
+	std::string              openclaw_state_ = "unknown";  // online / offline / unknown
+	std::string              channel_state_ = "idle";      // active / idle
+
+	// buildStatusJson 构造当前状态 JSON（调用者持有 status_mutex_ 或在单线程上下文）。
+	std::string buildStatusJson() const
+	{
+		return ipc::UIMessageFactory::createStatus(vm_state_, openclaw_state_, channel_state_);
+	}
+
+	// pushStatus 向 UI 推送最新系统状态。
+	void pushStatus()
+	{
+		std::string json;
+		{
+			std::lock_guard lock(status_mutex_);
+			json = buildStatusJson();
+		}
+		LOG_INFO("daemon: pushStatus() vm={} openclaw={} channel={} connected={}",
+		         vm_state_, openclaw_state_, channel_state_,
+		         ui_service_.isConnected());
+		ui_service_.push(json);
+	}
+
+	// updateVmState 更新 VM 状态并推送到 UI。
+	void updateVmState(const std::string& state)
+	{
+		{
+			std::lock_guard lock(status_mutex_);
+			if (vm_state_ == state) return;
+			vm_state_ = state;
+		}
+		LOG_INFO("daemon: vm state changed to '{}'", state);
+		pushStatus();
+	}
+
+	// updateOpenClawState 更新 OpenClaw 状态并推送到 UI。
+	void updateOpenClawState(const std::string& state)
+	{
+		{
+			std::lock_guard lock(status_mutex_);
+			if (openclaw_state_ == state) return;
+			openclaw_state_ = state;
+		}
+		LOG_INFO("daemon: openclaw state changed to '{}'", state);
+		pushStatus();
+	}
+
+	// updateChannelState 更新 Channel 状态并推送到 UI。
+	void updateChannelState(const std::string& state)
+	{
+		{
+			std::lock_guard lock(status_mutex_);
+			if (channel_state_ == state) return;
+			channel_state_ = state;
+		}
+		pushStatus();
+	}
+
+	// ── OpenClaw 健康探测 ─────────────────────────────────
+	std::thread           health_thread_;
+	HANDLE                health_stop_event_ = INVALID_HANDLE_VALUE;
+
+	// probeOpenClaw 通过 TCP 连接探测 OpenClaw Gateway 是否在监听。
+	// 利用 WSL2 localhost 转发，直接从 Windows 侧连接 localhost:18789。
+	//
+	// 返回: true 表示 TCP 连接成功（OpenClaw 在线）
+	bool probeOpenClaw()
+	{
+		SOCKET sock = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (sock == INVALID_SOCKET) {
+			LOG_INFO("daemon: probeOpenClaw() socket() failed, err={}", ::WSAGetLastError());
+			return false;
+		}
+
+		// 设置连接超时：3 秒（通过 non-blocking + select 实现）
+		u_long nonblock = 1;
+		::ioctlsocket(sock, FIONBIO, &nonblock);
+
+		sockaddr_in addr = {};
+		addr.sin_family      = AF_INET;
+		addr.sin_port        = htons(18789);
+		addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+		int ret = ::connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+		if (ret == 0) {
+			// 立即连接成功（localhost 上可能发生）
+			::closesocket(sock);
+			return true;
+		}
+
+		int err = ::WSAGetLastError();
+		if (err != WSAEWOULDBLOCK) {
+			// 立即失败（非 WOULDBLOCK 错误）
+			::closesocket(sock);
+			return false;
+		}
+
+		// 等待连接完成（最多 3 秒）
+		// Windows 注意：连接失败时 socket 会出现在 except_fds 中，
+		// 不传 except_fds 会导致 select() 一直等到超时。
+		fd_set write_fds, except_fds;
+		FD_ZERO(&write_fds);
+		FD_ZERO(&except_fds);
+		FD_SET(sock, &write_fds);
+		FD_SET(sock, &except_fds);
+		timeval tv = {3, 0};
+
+		ret = ::select(0, nullptr, &write_fds, &except_fds, &tv);
+		if (ret <= 0) {
+			// 超时或 select 错误
+			::closesocket(sock);
+			return false;
+		}
+
+		// 连接出现在 except_fds 中意味着连接失败
+		if (FD_ISSET(sock, &except_fds)) {
+			::closesocket(sock);
+			return false;
+		}
+
+		// 连接出现在 write_fds 中，再检查 SO_ERROR 确认
+		if (FD_ISSET(sock, &write_fds)) {
+			int so_error = 0;
+			int len = sizeof(so_error);
+			::getsockopt(sock, SOL_SOCKET, SO_ERROR,
+			             reinterpret_cast<char*>(&so_error), &len);
+			::closesocket(sock);
+			return so_error == 0;
+		}
+
+		::closesocket(sock);
+		return false;
+	}
+
+	// startHealthThread 启动后台线程：延迟确认 VM 状态 + 周期探测 OpenClaw。
+	//
+	// 入参:
+	// - distro_name: WSL 发行版名称（保留供未来使用）
+	void startHealthThread(const std::string& distro_name)
+	{
+		health_stop_event_ = ::CreateEventA(nullptr, TRUE, FALSE, nullptr);
+
+		health_thread_ = std::thread([this]() {
+			LOG_INFO("daemon: health thread started");
+
+			// 第一阶段：等 5 秒后确认 VM 状态
+			if (::WaitForSingleObject(health_stop_event_, 5000) == WAIT_OBJECT_0) {
+				LOG_INFO("daemon: health thread stopped during VM wait");
+				return;
+			}
+			if (vmm_launcher_.isRunning()) {
+				updateVmState("running");
+			}
+
+			// 第二阶段：周期探测 OpenClaw Gateway 端口（每 10 秒）
+			for (;;) {
+				bool online = probeOpenClaw();
+				LOG_INFO("daemon: openclaw probe result: {}", online ? "online" : "offline");
+				updateOpenClawState(online ? "online" : "offline");
+
+				// 可中断的 10 秒等待
+				if (::WaitForSingleObject(health_stop_event_, 10000) == WAIT_OBJECT_0) {
+					break;
+				}
+			}
+
+			LOG_INFO("daemon: health check thread exiting");
+		});
+	}
+
+	// stopHealthThread 停止健康探测线程。
+	void stopHealthThread()
+	{
+		if (health_stop_event_ != INVALID_HANDLE_VALUE) {
+			::SetEvent(health_stop_event_);
+		}
+		if (health_thread_.joinable()) {
+			health_thread_.join();
+		}
+		if (health_stop_event_ != INVALID_HANDLE_VALUE) {
+			::CloseHandle(health_stop_event_);
+			health_stop_event_ = INVALID_HANDLE_VALUE;
+		}
+	}
 
 	static Status parseToml(DaemonConfig& config);
 	static void   buildModuleConfig(const toml::table& tbl, core::ModuleSpec& spec);
@@ -69,6 +267,12 @@ struct Daemon::Implement
 	//   - TaskBeginHandler（创建任务，推送 UIService 事件）
 	//   - TaskEndHandler（结束任务，推送 UIService 事件）
 	void registerHandlers();
+
+	// onVsockFrame — Channel 3 VsockServer 的帧回调。
+	//
+	// 收到 VM 发来的 FrameCodec 帧后，解析 JSON，根据 "type" 字段直接路由到
+	// CapabilityService / TaskRegistry，响应通过 VsockConnection 发回 VM。
+	void onVsockFrame(vmm::VsockConnection& conn, const std::string& json);
 };
 
 // ─── Implement 方法实现 ──────────────────────────────────────────────────────
@@ -135,6 +339,34 @@ Status Daemon::Implement::parseToml(DaemonConfig& config)
 		fill_str("pipe_path",    config.ui_pipe_path,    DaemonConfig::DEFAULT_UI_PIPE_PATH);
 		fill_str("timeout_mode", config.ui_timeout_mode, DaemonConfig::DEFAULT_UI_TIMEOUT_MODE);
 		fill_int("timeout_secs", config.ui_timeout_secs, DaemonConfig::DEFAULT_UI_TIMEOUT_SECS);
+	}
+
+	if (const auto* vsock_tbl = tbl.get_as<toml::table>("vsock")) {
+		if (auto v = vsock_tbl->get_as<int64_t>("port")) {
+			if (config.vsock_port == DaemonConfig::DEFAULT_VSOCK_PORT) {
+				config.vsock_port = static_cast<uint32_t>(**v);
+			}
+		}
+		if (auto v = vsock_tbl->get_as<bool>("enabled")) {
+			config.vsock_enabled = **v;
+		}
+	}
+
+	if (const auto* vmm_tbl = tbl.get_as<toml::table>("vmm")) {
+		auto fill_str = [&](const char* key, std::string& field, const char* default_val) {
+			if (field == default_val) {
+				if (auto v = vmm_tbl->get_as<std::string>(key)) {
+					field = **v;
+				}
+			}
+		};
+		fill_str("distro_name", config.vmm_distro_name, DaemonConfig::DEFAULT_VMM_DISTRO_NAME);
+		fill_str("rootfs_path", config.vmm_rootfs_path, DaemonConfig::DEFAULT_VMM_ROOTFS_PATH);
+		fill_str("exe_path",    config.vmm_exe_path,    DaemonConfig::DEFAULT_VMM_EXE_PATH);
+
+		if (auto v = vmm_tbl->get_as<bool>("auto_start")) {
+			config.vmm_auto_start = **v;
+		}
 	}
 
 	if (const auto* modules_arr = tbl.get_as<toml::array>("modules")) {
@@ -222,6 +454,103 @@ void Daemon::Implement::registerHandlers()
 	    });
 }
 
+// ─── Channel 3 VsockServer 帧回调 ───────────────────────────────────────────
+
+void Daemon::Implement::onVsockFrame(vmm::VsockConnection& conn, const std::string& json)
+{
+	nlohmann::json msg;
+	try {
+		msg = nlohmann::json::parse(json);
+	} catch (const std::exception& e) {
+		LOG_ERROR("vsock: invalid JSON from VM: {}", e.what());
+		nlohmann::json err = {
+			{"success", false},
+			{"error_message", std::string("invalid JSON: ") + e.what()},
+		};
+		conn.sendFrame(err.dump());
+		return;
+	}
+
+	const std::string type = msg.value("type", std::string{});
+
+	if (type == "capability") {
+		// ── capability 调用 → CapabilityService ────────────────────────────
+		const std::string task_id    = msg.value("task_id",    std::string{});
+		const std::string capability = msg.value("capability", std::string{});
+		const std::string operation  = msg.value("operation",  std::string{});
+		const nlohmann::json params  = msg.value("params",     nlohmann::json::object());
+
+		LOG_DEBUG("vsock: capability '{}' op '{}' task '{}'", capability, operation, task_id);
+
+		auto result = service_.callCapability(capability, operation, params, task_id);
+
+		nlohmann::json resp;
+		if (result.success()) {
+			resp = {
+				{"success", true},
+				{"result",  result.value()},
+			};
+		} else {
+			resp = {
+				{"success",       false},
+				{"error_code",    static_cast<int>(result.error().code)},
+				{"error_message", std::string(result.error().message)},
+			};
+		}
+		conn.sendFrame(resp.dump());
+
+	} else if (type == "beginTask") {
+		// ── 任务开始 → TaskRegistry ────────────────────────────────────────
+		const std::string description      = msg.value("description",      std::string{});
+		const std::string root_description = msg.value("root_description", std::string{});
+		const std::string parent_task_id   = msg.value("parent_task_id",   std::string{});
+		const std::string session_id       = msg.value("session_id",       std::string{});
+
+		LOG_DEBUG("vsock: beginTask session '{}' desc '{}'", session_id, description);
+
+		const std::string task_id = task_registry_.beginTask(
+			description, root_description, parent_task_id, session_id);
+
+		const auto* task_ctx = task_registry_.findTask(task_id);
+		const std::string& ui_root_desc =
+			(task_ctx != nullptr && !task_ctx->root_description.empty())
+			? task_ctx->root_description
+			: root_description;
+		ui_service_.push(ipc::UIMessageFactory::createTaskBegin(task_id, ui_root_desc));
+
+		LOG_INFO("vsock: task begin task_id='{}' session='{}'", task_id, session_id);
+
+		nlohmann::json resp = {
+			{"type",    "beginTask_response"},
+			{"task_id", task_id},
+		};
+		conn.sendFrame(resp.dump());
+
+	} else if (type == "endTask") {
+		// ── 任务结束 → TaskRegistry ────────────────────────────────────────
+		const std::string task_id = msg.value("task_id", std::string{});
+		const bool success        = msg.value("success", true);
+
+		task_registry_.endTask(task_id);
+		ui_service_.push(ipc::UIMessageFactory::createTaskEnd(task_id));
+		LOG_INFO("vsock: task end task_id='{}' success={}", task_id, success);
+
+		nlohmann::json resp = {
+			{"type",    "endTask_response"},
+			{"success", true},
+		};
+		conn.sendFrame(resp.dump());
+
+	} else {
+		LOG_WARN("vsock: unknown message type from VM: '{}'", type);
+		nlohmann::json err = {
+			{"success", false},
+			{"error_message", "unknown message type: " + type},
+		};
+		conn.sendFrame(err.dump());
+	}
+}
+
 // ─── Daemon 公开接口 ─────────────────────────────────────────────────────────
 
 Daemon::Daemon()
@@ -278,8 +607,8 @@ Status Daemon::init(DaemonConfig config)
 		    timeout_mode,
 		    std::chrono::seconds(config.ui_timeout_secs),
 		    [this]() -> std::string {
-			    bool agent_connected = implement_->ipc_server_.activeConnectionCount() > 0;
-			    return ipc::UIMessageFactory::createStatus(agent_connected);
+			    std::lock_guard lock(implement_->status_mutex_);
+			    return implement_->buildStatusJson();
 		    });
 
 		if (!ui_status.ok()) {
@@ -288,19 +617,66 @@ Status Daemon::init(DaemonConfig config)
 			implement_->service_.setUIService(&implement_->ui_service_);
 			LOG_INFO("ui service listening on {}", config.ui_pipe_path);
 
-			// Agent 连接/断开时主动向 UI 推送最新状态
-			implement_->ipc_server_.setOnConnectionChanged([this](int count) {
-				bool agent_connected = count > 0;
-				implement_->ui_service_.push(
-				    ipc::UIMessageFactory::createStatus(agent_connected));
-				LOG_INFO("daemon: agent connection count changed to {}, pushed status to UI",
-				         count);
+			// Channel 1/3 连接变更时更新 channel 状态并推送到 UI
+			implement_->ipc_server_.setOnConnectionChanged([](int count) {
+				LOG_INFO("daemon: channel 1 connection count changed to {}", count);
 			});
 		}
 	}
 
 	// 7. 注册所有 Channel 1 处理器（capability + beginTask + endTask）
 	implement_->registerHandlers();
+
+	// 8. 启动 VsockServer（Channel 3：VM 直连）
+	if (config.vsock_enabled) {
+		implement_->vsock_server_ = vmm::createVsockServer(
+			[this](vmm::VsockConnection& conn, const std::string& json) {
+				implement_->onVsockFrame(conn, json);
+			},
+			[this](bool connected) {
+				if (connected) {
+					// vsock 连接建立 → 通道活跃
+					implement_->updateChannelState("active");
+				} else {
+					// vsock 连接断开 → 通道空闲
+					implement_->updateChannelState("idle");
+				}
+			});
+
+		auto vsock_status = implement_->vsock_server_->start(config.vsock_port);
+		if (!vsock_status.ok()) {
+			LOG_WARN("vsock server start failed: {}, VM connections disabled",
+			         vsock_status.message);
+			implement_->vsock_server_.reset();
+		} else {
+			LOG_INFO("vsock server listening on AF_HYPERV port {}", config.vsock_port);
+		}
+	} else {
+		LOG_INFO("vsock server disabled by config");
+	}
+
+	// 9. 启动 vmm.exe（VM 生命周期管理）
+	if (config.vmm_auto_start) {
+		VmmLauncherConfig vmm_cfg;
+		vmm_cfg.exe_path    = config.vmm_exe_path;
+		vmm_cfg.distro_name = config.vmm_distro_name;
+		vmm_cfg.daemon_pipe = config.socket_path;
+		vmm_cfg.log_level   = config.log_level;
+
+		auto vmm_status = implement_->vmm_launcher_.start(std::move(vmm_cfg));
+		if (!vmm_status.ok()) {
+			LOG_WARN("vmm_launcher start failed: {}, VM management disabled",
+			         vmm_status.message);
+		} else {
+			LOG_INFO("vmm.exe started for distro '{}'", config.vmm_distro_name);
+			implement_->updateVmState("starting");
+
+			// 启动后台健康探测线程（延迟确认 VM + 周期探测 OpenClaw）
+			implement_->startHealthThread(config.vmm_distro_name);
+		}
+	} else {
+		LOG_INFO("vmm auto_start disabled by config");
+	}
 
 	implement_->config_ = std::move(config);
 	return Status::Ok();
@@ -362,6 +738,17 @@ void Daemon::stop()
 		return;
 	}
 	LOG_INFO("daemon stopping");
+
+	// 先停止健康探测线程（避免探测与 vmm 停止竞争）
+	implement_->stopHealthThread();
+
+	// 停止 vmm.exe（断开对 daemon 的管理连接）
+	implement_->vmm_launcher_.stop();
+
+	if (implement_->vsock_server_) {
+		implement_->vsock_server_->stop();
+	}
+
 	implement_->ipc_server_.stop();
 	implement_->service_.release();
 	LOG_INFO("daemon stopped");

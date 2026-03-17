@@ -27,18 +27,28 @@ if(WIN32)
     )
 endif()
 
-# ─── vmm.exe 占位 ────────────────────────────────────────────────────────────
+# ─── vmm.exe ────────────────────────────────────────────────────────────────
 #
-# 未来每个 distro 对应一个 vmm.exe 实例（watchdog + Channel 1 管道服务端）。
-# 当前仅占位，不参与 ALL_BUILD（EXCLUDE_FROM_ALL）。
+# 每个 WSL2 distro 对应一个 vmm.exe 实例：
+#   - Watchdog 循环：定期检查 distro 状态，意外停止时自动重启
+#   - Channel 1 IPC Client：连接 daemon Named Pipe，上报心跳/事件
+#   - 接收 daemon 管理命令（启动/停止/快照等）
 
-add_executable(clawshell_vmm_exe EXCLUDE_FROM_ALL
+add_executable(clawshell_vmm_exe
     main.cc
+    vmm_app.cc
 )
 set_target_properties(clawshell_vmm_exe PROPERTIES
     OUTPUT_NAME "vmm"
 )
+target_include_directories(clawshell_vmm_exe PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
 target_link_libraries(clawshell_vmm_exe PRIVATE
     clawshell_vmm
+    clawshell_ipc
     clawshell_headers
+)
+target_compile_definitions(clawshell_vmm_exe PRIVATE
+    CLAWSHELL_VERSION="${PROJECT_VERSION}"
 )

@@ -74,7 +74,7 @@ public class App : ApplicationContext
 	private void WireDispatcherEvents()
 	{
 		_dispatcher.OnStatus += msg => {
-			_state.UpdateFromStatus(msg.AgentConnected);
+			_state.UpdateFromStatus(msg.Vm, msg.OpenClaw, msg.Channel);
 			UpdateTrayIcon();
 		};
 
@@ -188,11 +188,19 @@ public class App : ApplicationContext
 			if (!_state.ChannelConnected) {
 				_trayIcon.Icon = _iconOffline;
 				_trayIcon.Text = "ClawShell — 未连接";
-			} else {
+			} else if (_state.VmState == "running" && _state.OpenClawState == "online") {
 				_trayIcon.Icon = _iconNormal;
-				_trayIcon.Text = _state.AgentConnected
-					? "ClawShell — Agent 已连接"
-					: "ClawShell — 等待 Agent 连接";
+				_trayIcon.Text = _state.ChannelState == "active"
+					? "ClawShell — 工作中"
+					: "ClawShell — 就绪";
+			} else if (_state.VmState == "starting") {
+				_trayIcon.Icon = _iconNormal;
+				_trayIcon.Text = "ClawShell — VM 启动中";
+			} else {
+				_trayIcon.Icon = _iconOffline;
+				_trayIcon.Text = _state.VmState == "stopped"
+					? "ClawShell — VM 已停止"
+					: "ClawShell — OpenClaw 离线";
 			}
 		});
 	}

@@ -20,17 +20,21 @@ which routes them to the `ax` capability plugin for execution.
 
 ## Setup
 
-The ClawShell MCP Server must be registered in OpenClaw's acpx config.
+The ClawShell MCP Server must be registered in OpenClaw's acpx plugin config.
 Add to `~/.openclaw/openclaw.json`:
 
 ```json
 {
   "plugins": {
-    "acpx": {
-      "mcpServers": {
-        "clawshell-gui": {
-          "command": "python3",
-          "args": ["/path/to/clawshell/mcp/server/mcp_server.py"]
+    "entries": {
+      "acpx": {
+        "config": {
+          "mcpServers": {
+            "clawshell-gui": {
+              "command": "python3",
+              "args": ["/path/to/clawshell/mcp/server/mcp_server.py"]
+            }
+          }
         }
       }
     }

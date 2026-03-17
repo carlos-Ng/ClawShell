@@ -89,6 +89,70 @@ static DWORD runWslExe(const std::wstring& args)
 	return exit_code;
 }
 
+// runWslExeWithOutput 执行 wsl.exe 并捕获 stdout 输出。
+static DWORD runWslExeWithOutput(const std::wstring& args, std::wstring& output)
+{
+	output.clear();
+
+	SECURITY_ATTRIBUTES sa{};
+	sa.nLength        = sizeof(sa);
+	sa.bInheritHandle = TRUE;
+
+	HANDLE read_pipe  = INVALID_HANDLE_VALUE;
+	HANDLE write_pipe = INVALID_HANDLE_VALUE;
+	if (!CreatePipe(&read_pipe, &write_pipe, &sa, 0)) {
+		return GetLastError();
+	}
+	// 子进程只继承 write 端
+	SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0);
+
+	std::wstring cmd = L"wsl.exe " + args;
+	STARTUPINFOW si{};
+	si.cb         = sizeof(si);
+	si.dwFlags    = STARTF_USESTDHANDLES;
+	si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
+	si.hStdOutput = write_pipe;
+	si.hStdError  = write_pipe;
+
+	PROCESS_INFORMATION pi{};
+	BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE,
+	                         CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+	CloseHandle(write_pipe); // 父进程关闭 write 端
+
+	if (!ok) {
+		CloseHandle(read_pipe);
+		return GetLastError();
+	}
+
+	// 读取输出
+	char buf[4096];
+	DWORD bytesRead;
+	std::string raw;
+	while (ReadFile(read_pipe, buf, sizeof(buf), &bytesRead, nullptr) && bytesRead > 0) {
+		raw.append(buf, bytesRead);
+	}
+	CloseHandle(read_pipe);
+
+	WaitForSingleObject(pi.hProcess, INFINITE);
+	DWORD exit_code = 1;
+	GetExitCodeProcess(pi.hProcess, &exit_code);
+	CloseHandle(pi.hProcess);
+	CloseHandle(pi.hThread);
+
+	// wsl.exe 输出是 UTF-16LE
+	if (raw.size() >= 2) {
+		// 检查 BOM
+		const auto* wdata = reinterpret_cast<const wchar_t*>(raw.data());
+		size_t wlen = raw.size() / sizeof(wchar_t);
+		if (wlen > 0 && wdata[0] == 0xFEFF) {
+			wdata++;
+			wlen--;
+		}
+		output.assign(wdata, wlen);
+	}
+	return exit_code;
+}
+
 // writeWslConfig 将自定义内核路径写入 %USERPROFILE%\.wslconfig 的 [wsl2] 段。
 // 若文件不存在则创建；若 [wsl2] 段已有 kernel= 行则替换，否则追加。
 static bool writeWslConfig(const std::wstring& kernel_path)
@@ -308,11 +372,18 @@ private:
 	// createDistroViaWslExe 使用 wsl.exe --import 命令创建 distro（第三备用路径）。
 	bool createDistroViaWslExe(const DistroConfig& config);
 
+	// cleanupKeepalive 终止并关闭 keepalive 进程句柄。
+	void cleanupKeepalive();
+
 	IWSLService* com_service_       = nullptr;
 	bool         com_init_attempted_ = false;
 	bool         com_available_      = false;
 	HRESULT      last_hr_            = S_OK;   // 最近操作的 HRESULT
 	std::string  last_diagnostics_;            // wsl.exe 最后一次 stderr/stdout
+
+	// keepalive 进程：在 distro 内运行 sleep infinity，句柄同时用于探活。
+	// startDistro 时创建，stopDistro 时销毁。句柄无效 = distro 未启动或已退出。
+	HANDLE       keepalive_process_  = INVALID_HANDLE_VALUE;
 };
 
 // ── WslVMManager 构造/析构 ────────────────────────────────────────────────────
@@ -325,12 +396,23 @@ WslVMManager::WslVMManager()
 
 WslVMManager::~WslVMManager()
 {
+	cleanupKeepalive();
 	if (com_service_) {
 		com_service_->Release();
 		com_service_ = nullptr;
 	}
 	CoUninitialize();
 	LOG_INFO("WslVMManager destroyed");
+}
+
+void WslVMManager::cleanupKeepalive()
+{
+	if (keepalive_process_ != INVALID_HANDLE_VALUE) {
+		TerminateProcess(keepalive_process_, 0);
+		WaitForSingleObject(keepalive_process_, 3000);
+		CloseHandle(keepalive_process_);
+		keepalive_process_ = INVALID_HANDLE_VALUE;
+	}
 }
 
 // tryGetComService 尝试通过 COM 获取 IWSLService 接口。
@@ -585,37 +667,65 @@ Status WslVMManager::startDistro(const std::wstring& name)
 		return {Status::NOT_FOUND, "distro not registered"};
 	}
 
-	// 若 COM 接口可用，优先使用 IWSLDistribution::Launch
-	if (tryGetComService()) {
-		IWSLDistribution* dist = nullptr;
-		HRESULT hr = com_service_->GetDistributionByName(name.c_str(), &dist);
-		if (SUCCEEDED(hr) && dist) {
-			HANDLE proc = nullptr;
-			HANDLE nul  = GetStdHandle(STD_INPUT_HANDLE);
-			hr = dist->Launch(L"true", FALSE, nul, nul, nul, &proc);
-			dist->Release();
-			if (SUCCEEDED(hr) && proc) {
-				CloseHandle(proc);
-				LOG_INFO("startDistro succeeded via COM");
-				return Status::Ok();
-			}
-		}
+	// 清理旧的 keepalive 进程（如果有）
+	cleanupKeepalive();
+
+	// 清扫 distro 内残留的 sleep infinity 进程（防止 daemon 崩溃后遗留孤儿）。
+	// pkill 失败（distro 未运行 / 无残留）不影响后续流程。
+	// 注意：这条命令本身会短暂唤醒 distro（如果它没在跑），正好是我们要的效果。
+	runWslExe(L"-d " + name + L" -- /usr/bin/pkill -x sleep");
+
+	// 策略：启动一个 `wsl.exe -d <name> -- sleep infinity` 后台进程。
+	// 该进程有两个作用：
+	//   1. 维持 WSL interop session，防止 distro 被 idle 回收
+	//   2. 句柄 keepalive_process_ 用于 getDistroState() 探活
+	//      ── 句柄存活 = distro 在运行，句柄退出 = distro 真的停了
+	std::wstring cmd = L"wsl.exe -d " + name + L" -- sleep infinity";
+	STARTUPINFOW        si{};
+	PROCESS_INFORMATION pi{};
+	si.cb = sizeof(si);
+
+	BOOL ok = CreateProcessW(nullptr,
+	                         cmd.data(),
+	                         nullptr,
+	                         nullptr,
+	                         FALSE,
+	                         CREATE_NO_WINDOW,
+	                         nullptr,
+	                         nullptr,
+	                         &si,
+	                         &pi);
+	if (!ok) {
+		LOG_ERROR("startDistro: CreateProcessW failed, error={}", GetLastError());
+		return {Status::IO_ERROR, "failed to launch keepalive process"};
 	}
 
-	// 回退：wsl.exe -d <name> -- true
-	std::wstring args = L"-d " + name + L" -- true";
-	if (runWslExe(args) == 0) {
-		LOG_INFO("startDistro succeeded via wsl.exe");
-		return Status::Ok();
+	CloseHandle(pi.hThread);
+	keepalive_process_ = pi.hProcess;
+
+	// 等待短暂时间，确认进程没有立即退出（比如 distro 不存在的情况）
+	DWORD wait = WaitForSingleObject(keepalive_process_, 2000);
+	if (wait == WAIT_OBJECT_0) {
+		// 进程已退出 — 启动失败
+		DWORD exit_code = 1;
+		GetExitCodeProcess(keepalive_process_, &exit_code);
+		CloseHandle(keepalive_process_);
+		keepalive_process_ = INVALID_HANDLE_VALUE;
+		LOG_ERROR("startDistro: keepalive exited immediately (exit_code={})", exit_code);
+		return {Status::IO_ERROR, "distro failed to start"};
 	}
 
-	LOG_ERROR("startDistro failed");
-	return {Status::IO_ERROR, "failed to start distro"};
+	// WAIT_TIMEOUT — 进程仍在运行，说明 distro 启动成功
+	LOG_INFO("startDistro succeeded (keepalive pid={})", pi.dwProcessId);
+	return Status::Ok();
 }
 
 Status WslVMManager::stopDistro(const std::wstring& name)
 {
 	LOG_INFO("stopDistro: {}", wtoUtf8(name));
+
+	// 先清理 keepalive 进程
+	cleanupKeepalive();
 
 	// 尝试 COM 路径
 	if (tryGetComService()) {
@@ -680,6 +790,23 @@ DistroState WslVMManager::getDistroState(const std::wstring& name)
 		return DistroState::NOT_REGISTERED;
 	}
 
+	// 优先通过 keepalive 进程句柄判断：
+	// 句柄存活 = distro 在运行（sleep infinity 在 distro 内跑着）
+	// 句柄退出 = distro 真的停了（WSL 终止了 distro，sleep 被杀）
+	if (keepalive_process_ != INVALID_HANDLE_VALUE) {
+		DWORD exit_code = 0;
+		if (GetExitCodeProcess(keepalive_process_, &exit_code) &&
+		    exit_code == STILL_ACTIVE) {
+			return DistroState::RUNNING;
+		}
+		// keepalive 已退出 — distro 停了
+		CloseHandle(keepalive_process_);
+		keepalive_process_ = INVALID_HANDLE_VALUE;
+		return DistroState::STOPPED;
+	}
+
+	// 没有 keepalive 句柄（首次启动前或句柄已清理），回退到 COM / wsl.exe 检查
+
 	// 尝试通过 COM 获取精确状态
 	if (tryGetComService()) {
 		IWSLDistribution* dist = nullptr;
@@ -695,7 +822,12 @@ DistroState WslVMManager::getDistroState(const std::wstring& name)
 		}
 	}
 
-	// 回退：wslapi.h 无法查询运行状态，默认返回 STOPPED
+	// 回退：通过 wsl.exe -l --running 检查 distro 是否在运行列表中
+	std::wstring running_output;
+	DWORD ec = runWslExeWithOutput(L"-l --running", running_output);
+	if (ec == 0 && running_output.find(name) != std::wstring::npos) {
+		return DistroState::RUNNING;
+	}
 	return DistroState::STOPPED;
 }
 

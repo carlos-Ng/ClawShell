@@ -67,6 +67,14 @@ private:
 using FrameHandler = std::function<void(VsockConnection& conn,
                                         const std::string& json)>;
 
+// ConnectionHandler — 连接建立/断开时被调用。
+//
+// 入参:
+// - connected: true 表示新连接已建立，false 表示连接已断开。
+//
+// 调用线程：工作线程，需保证线程安全。
+using ConnectionHandler = std::function<void(bool connected)>;
+
 // ── VsockServerInterface ──────────────────────────────────────────────────────
 
 // VsockServerInterface 定义 Channel 3 vsock 服务端的抽象接口。
@@ -97,10 +105,13 @@ public:
 // createVsockServer 工厂函数，返回 Windows AF_HYPERV 实现实例。
 //
 // 入参:
-// - handler: 每收到完整帧时的回调（FrameCodec 解帧后调用）
+// - handler:     每收到完整帧时的回调（FrameCodec 解帧后调用）
+// - conn_handler: 连接建立/断开时的回调（可选，默认无）
 //
 // 出参/返回: VsockServerInterface 实例
-std::unique_ptr<VsockServerInterface> createVsockServer(FrameHandler handler);
+std::unique_ptr<VsockServerInterface> createVsockServer(
+	FrameHandler handler,
+	ConnectionHandler conn_handler = nullptr);
 
 } // namespace vmm
 } // namespace clawshell

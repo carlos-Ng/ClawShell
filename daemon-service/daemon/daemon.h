@@ -57,6 +57,34 @@ struct DaemonConfig
 	// 超时策略：wait_forever / timeout_deny / timeout_allow。
 	std::string ui_timeout_mode = DEFAULT_UI_TIMEOUT_MODE;
 
+	// ── VsockServer (Channel 3) 配置 ────────────────────────────────────────
+	static constexpr uint32_t DEFAULT_VSOCK_PORT    = 100;
+	static constexpr bool     DEFAULT_VSOCK_ENABLED = true;
+
+	// AF_HYPERV vsock 监听端口（VM 侧 AF_VSOCK 连接端口）。
+	uint32_t vsock_port    = DEFAULT_VSOCK_PORT;
+
+	// 是否启用 VsockServer（false 时不监听 VM 连接，用于无 VM 的调试场景）。
+	bool     vsock_enabled = DEFAULT_VSOCK_ENABLED;
+
+	// ── VMM 配置 ────────────────────────────────────────────────────────────
+	static constexpr const char* DEFAULT_VMM_DISTRO_NAME = "ClawShell";
+	static constexpr const char* DEFAULT_VMM_ROOTFS_PATH = "";
+	static constexpr const char* DEFAULT_VMM_EXE_PATH    = "";
+	static constexpr bool        DEFAULT_VMM_AUTO_START  = true;
+
+	// WSL2 distro 名称。
+	std::string vmm_distro_name = DEFAULT_VMM_DISTRO_NAME;
+
+	// rootfs tarball 路径（用于首次自动导入，空字符串表示不自动导入）。
+	std::string vmm_rootfs_path = DEFAULT_VMM_ROOTFS_PATH;
+
+	// vmm.exe 可执行文件路径（空字符串时从 daemon 同目录查找）。
+	std::string vmm_exe_path = DEFAULT_VMM_EXE_PATH;
+
+	// 是否随 daemon 自动启动 vmm.exe（false 时不启动 vmm.exe）。
+	bool vmm_auto_start = DEFAULT_VMM_AUTO_START;
+
 	// core 层配置（模块列表），由 TOML [[modules]] 填充。
 	core::CoreConfig core;
 };
