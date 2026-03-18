@@ -61,6 +61,51 @@ struct VmmApp::Implement
 	uint32_t     restart_attempts_ = 0;
 	std::chrono::steady_clock::time_point last_restart_time_;
 
+	// ── OpenClaw 启动辅助 ──────────────────────────────────────────────
+
+	// ensureOpenClawRunning 在 distro 内执行 `openclaw daemon start`。
+	// 调用是幂等的：若服务已在运行，openclaw 会立即返回成功。
+	// wait_for_boot_ms：distro 刚从 STOPPED 启动时，需要等 systemd 初始化；
+	//                   若 distro 之前已 RUNNING，传 0 跳过等待。
+	void ensureOpenClawRunning(uint32_t wait_for_boot_ms = 0)
+	{
+		if (!vm_manager_) { return; }
+
+		if (wait_for_boot_ms > 0) {
+			LOG_INFO("vmm: waiting {}ms for distro to boot before starting openclaw ...",
+			         wait_for_boot_ms);
+			std::this_thread::sleep_for(std::chrono::milliseconds(wait_for_boot_ms));
+		}
+
+		LOG_INFO("vmm: ensuring openclaw daemon is running in '{}'", config_.distro_name);
+
+		// runCommand 启动命令并返回进程句柄（不等待）
+		HANDLE h = static_cast<HANDLE>(
+			vm_manager_->runCommand(
+				distro_name_w_,
+				L"su -l clawshell -c 'openclaw daemon start'"));
+
+		if (h == INVALID_HANDLE_VALUE) {
+			LOG_WARN("vmm: failed to launch 'openclaw daemon start' in distro");
+			return;
+		}
+
+		// 等待命令完成（最多 15 秒）
+		DWORD result = WaitForSingleObject(h, 15000);
+		if (result == WAIT_TIMEOUT) {
+			LOG_WARN("vmm: 'openclaw daemon start' timed out (15s)");
+		} else {
+			DWORD exit_code = 0;
+			GetExitCodeProcess(h, &exit_code);
+			if (exit_code == 0) {
+				LOG_INFO("vmm: openclaw daemon started (or was already running)");
+			} else {
+				LOG_WARN("vmm: 'openclaw daemon start' exited with code {}", exit_code);
+			}
+		}
+		CloseHandle(h);
+	}
+
 	// ── Watchdog 单次检查 ──────────────────────────────────────────────
 
 	void watchdogCheck()
@@ -125,6 +170,8 @@ struct VmmApp::Implement
 				LOG_INFO("vmm: distro '{}' restarted successfully",
 				         config_.distro_name);
 				last_known_state_ = DistroState::RUNNING;
+				// distro 意外停止后重启，需要重新拉起 openclaw
+				ensureOpenClawRunning(3000);
 			} else {
 				LOG_ERROR("vmm: failed to restart distro '{}': {}",
 				          config_.distro_name, status.message);
@@ -183,16 +230,24 @@ Status VmmApp::init(VmmConfig config)
 	         cfg.distro_name, state_str);
 
 	// 如果 distro 已注册但未运行，启动它
+	bool just_started = false;
 	if (impl_->last_known_state_ == DistroState::STOPPED) {
 		LOG_INFO("vmm: starting distro '{}'", cfg.distro_name);
 		auto status = impl_->vm_manager_->startDistro(impl_->distro_name_w_);
 		if (status.ok()) {
 			impl_->last_known_state_ = DistroState::RUNNING;
+			just_started = true;
 			LOG_INFO("vmm: distro '{}' started", cfg.distro_name);
 		} else {
 			LOG_WARN("vmm: failed to start distro '{}': {}",
 			         cfg.distro_name, status.message);
 		}
+	}
+
+	// 确保 openclaw gateway 正在运行
+	// 冷启动：等 3 秒让 systemd 完成初始化；distro 已运行时直接触发（幂等）
+	if (impl_->last_known_state_ == DistroState::RUNNING) {
+		impl_->ensureOpenClawRunning(just_started ? 3000 : 0);
 	}
 
 	LOG_INFO("vmm: initialized (watchdog + VM lifecycle management)");

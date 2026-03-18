@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     ClawShell 一键安装脚本
@@ -702,6 +702,16 @@ try {
     Write-Ok "OpenClaw Gateway 已注册为 systemd 服务"
 } catch {
     Write-Warn "OpenClaw Gateway 服务注册失败，可稍后手动执行: wsl -d $DistroName -- su -l clawshell -c 'openclaw daemon install'"
+}
+
+# 启用 clawshell 用户的 systemd linger，使其 --user 服务在无 login session 时也能自启
+# 这是 WSL2 + systemd 下用户级服务开机自启的必要条件
+Write-Step "启用 systemd 用户服务自启 (loginctl enable-linger) ..."
+try {
+    wsl -d $DistroName -- loginctl enable-linger clawshell 2>&1 | Out-Null
+    Write-Ok "systemd linger 已启用（OpenClaw 将在 distro 启动时由 systemd 自动拉起）"
+} catch {
+    Write-Warn "loginctl enable-linger 失败，OpenClaw 将由 Windows daemon 在每次启动时主动拉起"
 }
 
 # 保存 Gateway 令牌到本地文件（方便用户后续查看）
