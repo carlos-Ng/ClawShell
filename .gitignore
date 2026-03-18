@@ -35,6 +35,10 @@ test_probe.cpp
 # Plans / local notes (not tracked)
 plans/
 
+# Docs removed from history (keep local only)
+docs/ui-design-draft.md
+docs/vmm-progress.md
+
 # Editor and OS
 .vs/
 .vscode/
