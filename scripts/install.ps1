@@ -695,7 +695,7 @@ if (-not $isUpgrade -and $ApiProvider -eq "local" -and $LocalModelUrl -match ":1
     Write-Ok "Ollama 环境变量配置"
 }
 
-# 安装 OpenClaw Gateway 为 systemd 用户服务（VM 启动时自动运行 WebUI）
+# 安装并启动 OpenClaw Gateway systemd 用户服务
 Write-Step "安装 OpenClaw Gateway 服务 ..."
 try {
     wsl -d $DistroName -- su -l clawshell -c "openclaw daemon install 2>&1" | Out-Null
@@ -712,6 +712,14 @@ try {
     Write-Ok "systemd linger 已启用（OpenClaw 将在 distro 启动时由 systemd 自动拉起）"
 } catch {
     Write-Warn "loginctl enable-linger 失败，OpenClaw 将由 Windows daemon 在每次启动时主动拉起"
+}
+
+Write-Step "启动 OpenClaw Gateway ..."
+try {
+    wsl -d $DistroName -- su -l clawshell -c "openclaw daemon start 2>&1" | Out-Null
+    Write-Ok "OpenClaw Gateway 已启动"
+} catch {
+    Write-Warn "OpenClaw Gateway 启动失败，可稍后手动执行: wsl -d $DistroName -- su -l clawshell -c 'openclaw daemon start'"
 }
 
 # 保存 Gateway 令牌到本地文件（方便用户后续查看）
@@ -750,7 +758,8 @@ Write-Ok "开机启动项已创建"
 Write-Step "注册卸载信息 ..."
 
 New-Item -Path $UninstallRegKey -Force | Out-Null
-$uninstallCmd = "powershell.exe -ExecutionPolicy Bypass -Command `"& { irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 | iex } -Uninstall`""
+# 注意：irm | iex 无法直接传参；需先下载脚本内容再 Invoke-Expression 追加参数
+$uninstallCmd = "powershell.exe -ExecutionPolicy Bypass -Command `"& { `$s = irm 'https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1'; Invoke-Expression (`$s + ' -Uninstall') }`""
 
 Set-ItemProperty -Path $UninstallRegKey -Name "DisplayName"     -Value $AppName
 Set-ItemProperty -Path $UninstallRegKey -Name "DisplayVersion"  -Value $ResolvedVersion
