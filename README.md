@@ -435,4 +435,10 @@ ClawShell/
 
 ## 许可证
 
-请参阅项目根目录的 LICENSE 文件。
+本项目采用 [MIT License](LICENSE) 开源协议。
+
+- **商业使用**：允许
+- **修改与分发**：允许，需保留版权声明与许可证全文
+- **专利与责任**：无担保，详见 [LICENSE](LICENSE) 文件
+
+Copyright (c) 2025 [carlos-Ng](https://github.com/carlos-Ng)
