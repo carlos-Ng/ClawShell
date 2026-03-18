@@ -67,6 +67,23 @@ The task context enables the host's security chain to audit and authorize operat
 
 - `gui__click` — Click a UI element by accessibility path. Required: `element_path`.
 - `gui__set_value` — Set text in an input field. Required: `element_path`. Optional: `value`.
+- `gui__key_press` — Send a single key press to the foreground window or a specific window. Required: `key`. Optional: `window_id` (omit to target foreground).  
+  **Special key names** (非字母键请用下表，字母/数字直接传字符如 `a`、`1`)。传参时**不要**用方括号包裹，直接写字符串即可，例如 `"key": "Return"`（正确），不要写 `"key": "[Return]"`（错误）。
+
+  | 含义     | key 取值 |
+  |----------|----------|
+  | 回车     | `Return` 或 `Enter` |
+  | 退格     | `BackSpace` 或 `Backspace` |
+  | 空格     | `Space` |
+  | 制表     | `Tab` |
+  | Esc      | `Escape` 或 `Esc` |
+  | 删除     | `Delete` 或 `Del` |
+  | 方向 ↑↓←→ | `Up` / `Down` / `Left` / `Right` |
+  | 行首/行尾 | `Home` / `End` |
+  | 上/下页   | `PageUp` / `PageDown` |
+  | 插入     | `Insert` |
+  | 功能键 F1–F12 | `F1` … `F12` |
+  | 修饰键（多用于组合键） | `Ctrl` 或 `Control` · `Alt` · `Shift` · `Win` · `Cmd` 或 `Command`（同 Win）· `Option`（同 Alt）|
 
 ### Typical Workflow
 
@@ -74,7 +91,7 @@ The task context enables the host's security chain to audit and authorize operat
 1. gui__begin_task  → get task_id
 2. gui__list_windows  → find target window
 3. gui__get_ui_tree  → discover element paths
-4. gui__click / gui__set_value  → interact
+4. gui__click / gui__set_value / gui__key_press  → interact
 5. gui__end_task  → close session
 ```
 

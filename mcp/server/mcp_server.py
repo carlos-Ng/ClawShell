@@ -167,6 +167,18 @@ TOOLS = [
             "required": ["window_id"],
         },
     },
+    {
+        "name": "gui__key_press",
+        "description": "向当前焦点或指定窗口发送单键按键事件。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "按键名，如 Return、Escape、a"},
+                "window_id": {"type": "string", "description": "可选，目标窗口 ID；不传则发到前台窗口"},
+            },
+            "required": ["key"],
+        },
+    },
 ]
 
 
@@ -256,6 +268,12 @@ class McpServer:
             if not isinstance(window_id, str) or not window_id:
                 raise ValueError("gui__activate_window 需要非空字符串参数 window_id")
             result = self._client.activate_window(window_id)
+        elif name == "gui__key_press":
+            key = args.get("key")
+            if not isinstance(key, str) or not key:
+                raise ValueError("gui__key_press 需要非空字符串参数 key")
+            window_id = str(args.get("window_id", ""))
+            result = self._client.key_press(window_id=window_id, key=key)
         else:
             raise ValueError(f"未知工具: {name}")
 
