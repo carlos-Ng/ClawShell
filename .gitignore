@@ -35,9 +35,11 @@ test_probe.cpp
 # Plans / local notes (not tracked)
 plans/
 
-# Docs removed from history (keep local only)
-docs/ui-design-draft.md
-docs/vmm-progress.md
+# Docs: only coding-style.md and development-standards.md are tracked
+# All other docs/*.md are local-only (drafts, plans, progress, etc.)
+docs/*.md
+!docs/coding-style.md
+!docs/development-standards.md
 
 # Editor and OS
 .vs/
