@@ -8,8 +8,8 @@ socket_path      = "\\\\.\\pipe\\crew-shell-service"
 thread_pool_size = 4
 log_level        = "debug"
 
-# 相对于 dist 目录：dist/lib/
-module_dir = "lib"
+# 插件 DLL 目录：dist/modules/（相对于 dist/ 工作目录）
+module_dir = "modules"
 
 # ── UIService (Channel 2) ────────────────────────────────────────────────────
 

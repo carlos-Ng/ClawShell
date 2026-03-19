@@ -43,6 +43,9 @@ public class DaemonChannel : IDisposable
 	// Start 启动后台连接与读取循环。
 	public void Start()
 	{
+		if (_cts != null) {
+			return;
+		}
 		_cts = new CancellationTokenSource();
 		_readTask = Task.Run(() => RunConnectLoop(_cts.Token));
 	}
@@ -52,6 +55,9 @@ public class DaemonChannel : IDisposable
 	{
 		_cts?.Cancel();
 		_pipe?.Close();
+		_pipe?.Dispose();
+		_pipe = null;
+		_cts = null;
 	}
 
 	// Dispose 释放所有资源。
@@ -111,7 +117,7 @@ public class DaemonChannel : IDisposable
 				await ConnectWithTimeoutAsync(pipe, token).ConfigureAwait(false);
 
 				_pipe = pipe;
-				OnConnectionChanged?.Invoke(true);
+				RaiseConnectionChanged(true);
 
 				await RunReadLoop(pipe, token).ConfigureAwait(false);
 			} catch (OperationCanceledException) {
@@ -123,7 +129,7 @@ public class DaemonChannel : IDisposable
 				_pipe = null;
 			}
 
-			OnConnectionChanged?.Invoke(false);
+			RaiseConnectionChanged(false);
 			pipe.Dispose();
 
 			// 等待重连间隔
@@ -143,14 +149,18 @@ public class DaemonChannel : IDisposable
 	private static async Task ConnectWithTimeoutAsync(
 		NamedPipeClientStream pipe, CancellationToken token)
 	{
-		// ConnectAsync 不支持直接绑定取消令牌，用 Task.WhenAny 包装超时
-		var connectTask = pipe.ConnectAsync(token);
-		var timeoutTask = Task.Delay(5000, token);
+		// 使用独立超时令牌，确保超时后当前连接尝试会被真正取消。
+		using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+		timeoutCts.CancelAfter(5000);
 
-		await Task.WhenAny(connectTask, timeoutTask).ConfigureAwait(false);
+		try {
+			await pipe.ConnectAsync(timeoutCts.Token).ConfigureAwait(false);
+		} catch (OperationCanceledException) when (!token.IsCancellationRequested) {
+			throw new TimeoutException("连接 daemon 超时");
+		}
 
 		if (!pipe.IsConnected) {
-			throw new TimeoutException("连接 daemon 超时");
+			throw new IOException("连接 daemon 失败");
 		}
 	}
 
@@ -177,7 +187,39 @@ public class DaemonChannel : IDisposable
 			await ReadExactAsync(pipe, body, length, token).ConfigureAwait(false);
 
 			var json = Encoding.UTF8.GetString(body);
-			OnFrameReceived?.Invoke(json);
+			RaiseFrameReceived(json);
+		}
+	}
+
+	// RaiseConnectionChanged 触发连接状态事件，隔离订阅方异常，避免中断重连循环。
+	private void RaiseConnectionChanged(bool connected)
+	{
+		var handlers = OnConnectionChanged;
+		if (handlers == null) {
+			return;
+		}
+		foreach (var handler in handlers.GetInvocationList()) {
+			try {
+				((Action<bool>)handler)(connected);
+			} catch {
+				// 订阅方异常不应影响通信层重连逻辑
+			}
+		}
+	}
+
+	// RaiseFrameReceived 触发消息事件，隔离订阅方异常，避免中断读取循环。
+	private void RaiseFrameReceived(string json)
+	{
+		var handlers = OnFrameReceived;
+		if (handlers == null) {
+			return;
+		}
+		foreach (var handler in handlers.GetInvocationList()) {
+			try {
+				((Action<string>)handler)(json);
+			} catch {
+				// 订阅方异常不应导致管道读循环退出
+			}
 		}
 	}
 

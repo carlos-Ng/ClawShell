@@ -689,6 +689,14 @@ command=/bin/bash -c 'loginctl enable-linger $CLAWSHELL_USER 2>/dev/null; true'
 
 [network]
 generateResolvConf=true
+
+[automount]
+enabled=false
+mountFsTab=false
+
+[interop]
+enabled=false
+appendWindowsPath=false
 WSL
 
     umount_vfs

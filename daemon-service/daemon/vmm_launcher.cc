@@ -59,6 +59,7 @@ struct VmmLauncher::Implement
 	HANDLE               process_handle_ = INVALID_HANDLE_VALUE;
 	DWORD                process_id_     = 0;
 	HANDLE               stop_event_     = INVALID_HANDLE_VALUE;
+	HANDLE               job_handle_     = INVALID_HANDLE_VALUE;
 #endif
 
 	uint32_t             rapid_restart_count_ = 0;
@@ -96,6 +97,29 @@ struct VmmLauncher::Implement
 		if (!ok) {
 			LOG_ERROR("vmm_launcher: CreateProcess failed: {}", ::GetLastError());
 			return false;
+		}
+
+		// 将 vmm 进程放入 Job Object，确保 daemon 异常退出时 vmm 不会变成孤儿进程。
+		if (job_handle_ == INVALID_HANDLE_VALUE) {
+			job_handle_ = ::CreateJobObjectA(nullptr, nullptr);
+			if (job_handle_ == INVALID_HANDLE_VALUE) {
+				LOG_WARN("vmm_launcher: CreateJobObject failed: {}", ::GetLastError());
+			} else {
+				JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = {};
+				info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+				if (!::SetInformationJobObject(
+				        job_handle_,
+				        JobObjectExtendedLimitInformation,
+				        &info,
+				        sizeof(info))) {
+					LOG_WARN("vmm_launcher: SetInformationJobObject failed: {}", ::GetLastError());
+				}
+			}
+		}
+		if (job_handle_ != INVALID_HANDLE_VALUE) {
+			if (!::AssignProcessToJobObject(job_handle_, pi.hProcess)) {
+				LOG_WARN("vmm_launcher: AssignProcessToJobObject failed: {}", ::GetLastError());
+			}
 		}
 
 		process_handle_ = pi.hProcess;
@@ -312,6 +336,10 @@ Status VmmLauncher::start(VmmLauncherConfig config)
 			::CloseHandle(impl_->stop_event_);
 			impl_->stop_event_ = INVALID_HANDLE_VALUE;
 		}
+	if (impl_->job_handle_ != INVALID_HANDLE_VALUE) {
+		::CloseHandle(impl_->job_handle_);
+		impl_->job_handle_ = INVALID_HANDLE_VALUE;
+	}
 #endif
 		return Status(Status::IO_ERROR, "claw_shell_vmm.exe launch failed");
 	}
@@ -352,6 +380,10 @@ void VmmLauncher::stop()
 	if (impl_->stop_event_ != INVALID_HANDLE_VALUE) {
 		::CloseHandle(impl_->stop_event_);
 		impl_->stop_event_ = INVALID_HANDLE_VALUE;
+	}
+	if (impl_->job_handle_ != INVALID_HANDLE_VALUE) {
+		::CloseHandle(impl_->job_handle_);
+		impl_->job_handle_ = INVALID_HANDLE_VALUE;
 	}
 #endif
 

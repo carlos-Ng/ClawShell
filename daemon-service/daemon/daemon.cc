@@ -228,6 +228,23 @@ struct Daemon::Implement
 				updateVmState("running");
 			}
 
+			// 第一阶段 b：VM 就绪后，获取 RuntimeId 并启动 vsock
+			if (vsock_server_ && !vsock_server_->isRunning()) {
+				GUID vm_guid{};
+				if (vmm::discoverWsl2VmId(&vm_guid)) {
+					vsock_server_->setVmId(&vm_guid);
+					auto st = vsock_server_->start(config_.vsock_port);
+					if (st.ok()) {
+						LOG_INFO("daemon: vsock server started with VM RuntimeId binding");
+					} else {
+						LOG_WARN("daemon: vsock server start failed: {}", st.message);
+					}
+				} else {
+					LOG_WARN("daemon: could not discover WSL2 VM RuntimeId, "
+					         "vsock will not be available");
+				}
+			}
+
 			// 第二阶段：周期探测 OpenClaw Gateway 端口（每 10 秒）
 			for (;;) {
 				bool online = probeOpenClaw();
@@ -627,7 +644,7 @@ Status Daemon::init(DaemonConfig config)
 	// 7. 注册所有 Channel 1 处理器（capability + beginTask + endTask）
 	implement_->registerHandlers();
 
-	// 8. 启动 VsockServer（Channel 3：VM 直连）
+	// 8. 创建 VsockServer 实例（延迟到 VM 就绪后启动，需获取 WSL2 VM RuntimeId）
 	if (config.vsock_enabled) {
 		implement_->vsock_server_ = vmm::createVsockServer(
 			[this](vmm::VsockConnection& conn, const std::string& json) {
@@ -635,22 +652,12 @@ Status Daemon::init(DaemonConfig config)
 			},
 			[this](bool connected) {
 				if (connected) {
-					// vsock 连接建立 → 通道活跃
 					implement_->updateChannelState("active");
 				} else {
-					// vsock 连接断开 → 通道空闲
 					implement_->updateChannelState("idle");
 				}
 			});
-
-		auto vsock_status = implement_->vsock_server_->start(config.vsock_port);
-		if (!vsock_status.ok()) {
-			LOG_WARN("vsock server start failed: {}, VM connections disabled",
-			         vsock_status.message);
-			implement_->vsock_server_.reset();
-		} else {
-			LOG_INFO("vsock server listening on AF_HYPERV port {}", config.vsock_port);
-		}
+		LOG_INFO("vsock server instance created (will start after VM is ready)");
 	} else {
 		LOG_INFO("vsock server disabled by config");
 	}

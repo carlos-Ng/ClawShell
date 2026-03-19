@@ -3,7 +3,10 @@
 // vsock_server.h — Host 侧 Hyper-V socket（AF_HYPERV）服务端（Channel 3 传输层）
 //
 // 监听来自 WSL2 VM 内 mcp_server.py 的 AF_VSOCK 连接。
-// 绑定 HV_GUID_CHILDREN，接受任意子 VM 的连接，无需知晓具体 VM GUID。
+//
+// WSL2 MicroVM 的 AF_VSOCK 连接不会到达以 HV_GUID_WILDCARD / HV_GUID_CHILDREN
+// 绑定的监听器。宿主机必须绑定到 WSL2 VM 的实际 RuntimeId（GUID）才能收到连接。
+// 通过 setVmId() 在 start() 之前设置，若未设置则回退到 HV_GUID_WILDCARD。
 //
 // 上层协议：ClawShell FrameCodec（4B 大端长度前缀 + UTF-8 JSON body）。
 // 每收到完整帧，回调注册的 FrameHandler。
@@ -13,6 +16,11 @@
 //   - 每个连接独立 1 个工作线程（连接数通常极少，per-thread 模型足够）。
 
 #include "common/error.h"
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 
 #include <functional>
 #include <memory>
@@ -84,7 +92,15 @@ class VsockServerInterface
 public:
 	virtual ~VsockServerInterface() = default;
 
-	// start 初始化 Winsock，创建 AF_HYPERV 监听 socket（绑定 HV_GUID_CHILDREN），
+	// setVmId 设置要绑定的 WSL2 VM RuntimeId。
+	//
+	// WSL2 MicroVM 的 AF_VSOCK 连接不会到达以 HV_GUID_WILDCARD 绑定的监听器，
+	// 必须绑定到 VM 的实际 RuntimeId 才能收到连接。
+	//
+	// 须在 start() 之前调用；传入 nullptr 则使用 HV_GUID_WILDCARD（仅对非 WSL2 有效）。
+	virtual void setVmId(const GUID* vm_id) = 0;
+
+	// start 初始化 Winsock，创建 AF_HYPERV 监听 socket，
 	// 并在后台线程启动 accept 循环。
 	//
 	// 入参:
@@ -101,6 +117,19 @@ public:
 	// isRunning 返回服务端当前是否正在运行。
 	virtual bool isRunning() const = 0;
 };
+
+// discoverWsl2VmId 通过 HCS API 查找当前运行中的 WSL2 VM 的 RuntimeId。
+//
+// WSL2 每次启动时分配不同的 RuntimeId，此函数从 HcsEnumerateComputeSystems
+// 返回的 JSON 中查找含 "WSL" 的计算系统并提取其 RuntimeId。
+//
+// 出参:
+// - out: 成功时填充 VM 的 RuntimeId GUID
+//
+// 返回:
+// - true:  成功找到
+// - false: WSL2 VM 未运行、HCS API 不可用或需管理员权限
+bool discoverWsl2VmId(GUID* out);
 
 // createVsockServer 工厂函数，返回 Windows AF_HYPERV 实现实例。
 //

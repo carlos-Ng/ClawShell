@@ -46,6 +46,14 @@ param(
     [string]$LocalModelId = ""
 )
 
+# Version convention (unified):
+#   - Git tag / URL path: with "v"  → .../releases/download/v0.1.0/...
+#   - Package name / version string: no "v" → clawshell-windows-0.1.0.zip, config/version.txt = "0.1.0"
+# So URL is: .../v0.1.0/clawshell-windows-0.1.0.zip
+
+# Normalize: -Version may be "0.1.0" or "v0.1.0"; we keep version without "v" for zip name and display
+if ($Version -match '^v(.+)$') { $Version = $Matches[1] }
+
 # -- Config ----------------------------------------------------------------
 
 $ErrorActionPreference = "Stop"
@@ -64,7 +72,7 @@ $DefaultInstDir = Join-Path $env:LOCALAPPDATA $AppName
 $StartupDir     = [Environment]::GetFolderPath("Startup")
 $UninstallRegKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppName"
 
-# GitHub Release URL construction
+# GitHub Release URL: path uses "v" (tag style), e.g. .../releases/download/v0.1.0
 if (-not $ReleaseUrl) {
     if ($Version) {
         $DefaultReleaseBase = "https://github.com/carlos-Ng/ClawShell/releases/download/v$Version"
@@ -342,9 +350,10 @@ if (-not $InstallDir) {
     $InstallDir = $DefaultInstDir
 }
 
-$DistroDir = Join-Path $InstallDir "vm"
-$BinDir    = Join-Path $InstallDir "bin"
-$ConfigDir = Join-Path $InstallDir "config"
+$DistroDir  = Join-Path $InstallDir "vm"
+$BinDir     = Join-Path $InstallDir "bin"
+$ModuleDir  = Join-Path $InstallDir "modules"
+$ConfigDir  = Join-Path $InstallDir "config"
 $DownloadDir = Join-Path $InstallDir "downloads"
 
 Write-Ok "Install path: $InstallDir"
@@ -469,7 +478,7 @@ if (-not $ResolvedVersion) {
     }
 }
 
-# Zip filename includes version (matches CMake release target output)
+# Zip filename: version without "v" (matches CMake: clawshell-windows-<version>.zip)
 $WindowsZipName = if ($ResolvedVersion -eq "latest") {
     "clawshell-windows.zip"
 } else {
@@ -579,7 +588,8 @@ if (-not $isUpgrade) {
 Write-Banner "Install"
 
 # Create directories
-New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
+New-Item -ItemType Directory -Path $BinDir    -Force | Out-Null
+New-Item -ItemType Directory -Path $ModuleDir -Force | Out-Null
 New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null
 New-Item -ItemType Directory -Path $DistroDir -Force | Out-Null
 
@@ -590,9 +600,11 @@ Get-Process -Name "claw_shell_service", "claw_shell_vmm", "claw_shell_ui" -Error
 Start-Sleep -Seconds 1
 
 # Extract Windows package
+# zip 结构：bin/(exe), modules/(dll), config/(toml)
+# 解压到 $InstallDir，使各文件落入对应子目录
 Write-Step "Extracting Windows package ..."
 $zipPath = Join-Path $DownloadDir $WindowsZipName
-Expand-Archive -Path $zipPath -DestinationPath $BinDir -Force
+Expand-Archive -Path $zipPath -DestinationPath $InstallDir -Force
 Write-Ok "Program files installed"
 
 # -- Import WSL Distro -----------------------------------------------------
@@ -629,30 +641,78 @@ if (-not $isUpgrade) {
 
 Write-Step "Writing configuration ..."
 
-# daemon.toml
-$daemonConfig = @"
-[general]
-distro_name = "$DistroName"
-install_dir = "$($InstallDir -replace '\\', '\\\\')"
+# Harden WSL boundary: disable Windows disk automount and Windows interop.
+# This reduces host exposure if VM is compromised.
+$wslConfContent = @"
+[user]
+default=clawshell
 
-[ipc]
-pipe_name = "clawshell-service"
-ui_pipe_name = "clawshell-service-ui"
+[boot]
+systemd=true
+command=/bin/bash -c 'loginctl enable-linger clawshell 2>/dev/null; true'
 
-[vsock]
-port    = 100
-enabled = true
+[network]
+generateResolvConf=true
 
-[vmm]
-distro_name = "$DistroName"
-auto_start  = true
+[automount]
+enabled=false
+mountFsTab=false
 
-[modules]
-capability_dirs = ["$($BinDir -replace '\\', '\\\\')"]
-security_dirs = ["$($BinDir -replace '\\', '\\\\')"]
+[interop]
+enabled=false
+appendWindowsPath=false
 "@
 
-Set-Content -Path (Join-Path $ConfigDir "daemon.toml") -Value $daemonConfig -Encoding UTF8
+Write-Step "Hardening WSL isolation (disable /mnt/* automount and interop) ..."
+$exitCode = Invoke-WslSilent "-d $DistroName -u root -- bash -lc `"cat > /etc/wsl.conf`"" -InputText $wslConfContent
+if ($exitCode -eq 0) {
+    Write-Ok "WSL isolation policy applied (/etc/wsl.conf)"
+} else {
+    Write-Warn "Failed to update /etc/wsl.conf (exit code: $exitCode)"
+    Write-Warn "You can apply manually: wsl -d $DistroName -u root -- bash -lc 'cat > /etc/wsl.conf'"
+}
+
+# daemon.toml
+# 使用 LF 换行 + UTF-8 无 BOM，避免 toml++ 因 CRLF 或 BOM 解析失败
+$ModuleDirToml = $ModuleDir -replace '\\', '\\\\'
+$ConfigDirToml = $ConfigDir -replace '\\', '\\\\'
+$rulesFile     = "$ConfigDirToml\\security_filter_rules.toml"
+$nl = "`n"
+$daemonConfigLines = @(
+    "[daemon]",
+    "socket_path      = `"\\\\.\\pipe\\crew-shell-service`"",
+    "thread_pool_size = 4",
+    "log_level        = `"info`"",
+    "module_dir       = `"$ModuleDirToml`"",
+    "",
+    "[ui]",
+    "pipe_path    = `"\\\\.\\pipe\\crew-shell-service-ui`"",
+    "timeout_mode = `"timeout_deny`"",
+    "timeout_secs = 60",
+    "",
+    "[vsock]",
+    "port    = 100",
+    "enabled = true",
+    "",
+    "[vmm]",
+    "distro_name = `"$DistroName`"",
+    "auto_start  = true",
+    "",
+    "[[modules]]",
+    "name = `"capability_ax`"",
+    "",
+    "[[modules]]",
+    "name       = `"security_filter`"",
+    "priority   = 10",
+    "rules_file = `"$rulesFile`"",
+    ""
+)
+$daemonConfigContent = $daemonConfigLines -join $nl
+[System.IO.File]::WriteAllText(
+    (Join-Path $ConfigDir "daemon.toml"),
+    $daemonConfigContent,
+    [System.Text.UTF8Encoding]::new($false)   # UTF-8 无 BOM，LF 换行
+)
 Write-Ok "daemon.toml"
 
 # OpenClaw config (written inside WSL)
