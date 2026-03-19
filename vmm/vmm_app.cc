@@ -83,7 +83,9 @@ struct VmmApp::Implement
 		HANDLE h = static_cast<HANDLE>(
 			vm_manager_->runCommand(
 				distro_name_w_,
-				L"su -l clawshell -c 'openclaw daemon start'"));
+				// 不再使用 sudo，避免 secure_path 导致找不到 openclaw；
+				// 通过登录 shell 显式补齐 PNPM_HOME/PATH，保证命令可见。
+				L"bash -lc \"export PNPM_HOME=/usr/local/share/pnpm; export PATH=$PNPM_HOME:$PATH; openclaw daemon start\""));
 
 		if (h == INVALID_HANDLE_VALUE) {
 			LOG_WARN("vmm: failed to launch 'openclaw daemon start' in distro");

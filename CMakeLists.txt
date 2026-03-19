@@ -152,6 +152,12 @@ target_link_libraries(claw_shell_service PRIVATE
 target_compile_definitions(claw_shell_service PRIVATE
     CLAWSHELL_VERSION="${PROJECT_VERSION}"
 )
+if(WIN32)
+    # 方案 B：daemon 以管理员权限运行，避免 HCS RuntimeId 发现权限不足。
+    target_link_options(claw_shell_service PRIVATE
+        "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'"
+    )
+endif()
 
 # ─── UI (C# WinForms) ────────────────────────────────────────────────────────
 # clawshell_ui 随 ALL_BUILD 一并构建，与 daemon 平行执行。
@@ -194,27 +200,30 @@ endif()
 
 add_custom_target(dist
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CLAWSHELL_DIST_DIR}/bin"
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${CLAWSHELL_DIST_DIR}/lib"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CLAWSHELL_DIST_DIR}/modules"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CLAWSHELL_DIST_DIR}/config"
+    # 可执行文件 → dist/bin/
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         $<TARGET_FILE:claw_shell_service>
         "${CLAWSHELL_DIST_DIR}/bin/claw_shell_service${CLAWSHELL_EXE_EXT}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:clawshell_vmm_exe>
+        "${CLAWSHELL_DIST_DIR}/bin/claw_shell_vmm${CLAWSHELL_EXE_EXT}"
+    # 插件 DLL → dist/modules/（clawshell_dist.toml 中 module_dir = "modules"）
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
         $<TARGET_FILE:capability_ax>
-        "${CLAWSHELL_DIST_DIR}/lib/${CLAWSHELL_LIB_PREFIX}capability_ax${CLAWSHELL_LIB_EXT}"
+        "${CLAWSHELL_DIST_DIR}/modules/${CLAWSHELL_LIB_PREFIX}capability_ax${CLAWSHELL_LIB_EXT}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         $<TARGET_FILE:security_filter>
-        "${CLAWSHELL_DIST_DIR}/lib/${CLAWSHELL_LIB_PREFIX}security_filter${CLAWSHELL_LIB_EXT}"
+        "${CLAWSHELL_DIST_DIR}/modules/${CLAWSHELL_LIB_PREFIX}security_filter${CLAWSHELL_LIB_EXT}"
+    # 配置文件 → dist/config/
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/config/clawshell_dist.toml"
         "${CLAWSHELL_DIST_DIR}/config/clawshell.toml"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_SOURCE_DIR}/config/security_filter_rules.toml"
         "${CLAWSHELL_DIST_DIR}/config/security_filter_rules.toml"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        $<TARGET_FILE:clawshell_vmm_exe>
-        "${CLAWSHELL_DIST_DIR}/bin/claw_shell_vmm${CLAWSHELL_EXE_EXT}"
-    COMMENT "Populating dist/ with daemon, vmm, dlls and config"
+    COMMENT "Populating dist/ (bin/exe, modules/dll, config/toml)"
     DEPENDS claw_shell_service clawshell_vmm_exe capability_ax security_filter
 )
 
@@ -235,6 +244,7 @@ endif()
 # ─── Release 打包 ────────────────────────────────────────────────────────────
 #
 # 将 dist/bin/ 下所有文件打包为 clawshell-windows-<version>.zip。
+# 版本约定：Git tag 带 v（如 v0.1.0），包名不带 v（如 clawshell-windows-0.1.0.zip）。
 # 用法：cmake --build build --target release
 #
 # 输出：${CMAKE_SOURCE_DIR}/clawshell-windows-${PROJECT_VERSION}.zip
@@ -248,10 +258,10 @@ if(WIN32)
     add_custom_target(release
         COMMAND ${CMAKE_COMMAND} -E echo "Packaging ${CLAWSHELL_WINDOWS_ZIP} ..."
         COMMAND powershell -NoProfile -NonInteractive -Command
-            "Compress-Archive -Path '${CLAWSHELL_DIST_DIR}/bin/*' -DestinationPath '${CLAWSHELL_WINDOWS_ZIP}' -Force"
+            "Compress-Archive -Path '${CLAWSHELL_DIST_DIR}/*' -DestinationPath '${CLAWSHELL_WINDOWS_ZIP}' -Force"
         COMMAND ${CMAKE_COMMAND} -E echo "Done: ${CLAWSHELL_WINDOWS_ZIP}"
         DEPENDS dist
-        COMMENT "Creating clawshell-windows-${PROJECT_VERSION}.zip from dist/bin/"
+        COMMENT "Creating clawshell-windows-${PROJECT_VERSION}.zip from dist/"
         VERBATIM
     )
 endif()

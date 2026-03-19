@@ -52,3 +52,24 @@ target_link_libraries(clawshell_vmm_exe PRIVATE
 target_compile_definitions(clawshell_vmm_exe PRIVATE
     CLAWSHELL_VERSION="${PROJECT_VERSION}"
 )
+
+# ─── vsock D 方案验证工具 ─────────────────────────────────────────────────────
+#
+# 该工具用于独立验证：
+# - 预注册 GCS service GUID 后，是否可通过 HV_GUID_CHILDREN 接收 WSL2 AF_VSOCK 连接
+# - 若通过，daemon 可无需管理员权限运行（避免 HCS RuntimeId 发现依赖）
+#
+# 仅用于验证，不参与主服务运行链路。
+add_executable(clawshell_vsock_probe
+    tools/vsock_probe_main.cc
+)
+target_include_directories(clawshell_vsock_probe PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(clawshell_vsock_probe PRIVATE
+    clawshell_vmm
+    clawshell_headers
+)
+target_compile_definitions(clawshell_vsock_probe PRIVATE
+    CLAWSHELL_VERSION="${PROJECT_VERSION}"
+)

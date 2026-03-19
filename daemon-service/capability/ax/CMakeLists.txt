@@ -33,9 +33,18 @@ endif()
 
 set_target_properties(capability_ax PROPERTIES
     OUTPUT_NAME  "capability_ax"
-    # 输出到 build/daemon-service/，与 config 中 module_dir = "build/daemon-service" 一致
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/daemon-service"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/daemon-service"
+    # 输出到 build/daemon-service/，与 clawshell.toml 中 module_dir = "build/daemon-service" 一致。
+    # 显式设置各配置的输出目录，防止 MSVC 多配置生成器自动追加 Debug/ / Release/ 子目录。
+    LIBRARY_OUTPUT_DIRECTORY                "${CMAKE_BINARY_DIR}/daemon-service"
+    RUNTIME_OUTPUT_DIRECTORY                "${CMAKE_BINARY_DIR}/daemon-service"
+    LIBRARY_OUTPUT_DIRECTORY_DEBUG          "${CMAKE_BINARY_DIR}/daemon-service"
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG          "${CMAKE_BINARY_DIR}/daemon-service"
+    LIBRARY_OUTPUT_DIRECTORY_RELEASE        "${CMAKE_BINARY_DIR}/daemon-service"
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE        "${CMAKE_BINARY_DIR}/daemon-service"
+    LIBRARY_OUTPUT_DIRECTORY_MINSIZEREL     "${CMAKE_BINARY_DIR}/daemon-service"
+    RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL     "${CMAKE_BINARY_DIR}/daemon-service"
+    LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/daemon-service"
+    RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${CMAKE_BINARY_DIR}/daemon-service"
 )
 
 # Convenience alias: `cmake --build . --target ax`

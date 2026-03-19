@@ -3,10 +3,14 @@
 
 #include "common/log.h"
 
+#include <nlohmann/json.hpp>
+
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -141,6 +145,7 @@ public:
 		stop();
 	}
 
+	void   setVmId(const GUID* vm_id) override;
 	Status start(uint32_t vsock_port) override;
 	void   stop() override;
 	bool   isRunning() const override { return running_.load(); }
@@ -153,6 +158,8 @@ private:
 
 	FrameHandler          handler_;
 	ConnectionHandler     conn_handler_;
+	GUID                  vm_id_{};
+	bool                  use_specific_vm_id_ = false;
 	SOCKET                listen_sock_ = INVALID_SOCKET;
 	std::atomic<bool>     running_{false};
 	std::thread           accept_thread_;
@@ -161,6 +168,14 @@ private:
 };
 
 // ── WindowsVsockServer 实现 ───────────────────────────────────────────────────
+
+void WindowsVsockServer::setVmId(const GUID* vm_id)
+{
+	use_specific_vm_id_ = (vm_id != nullptr);
+	if (vm_id) {
+		vm_id_ = *vm_id;
+	}
+}
 
 bool WindowsVsockServer::initWinsock()
 {
@@ -179,11 +194,14 @@ bool WindowsVsockServer::createListenSocket(uint32_t vsock_port)
 	SOCKADDR_HV addr{};
 	addr.Family    = AF_HYPERV;
 	addr.Reserved  = 0;
-	// HV_GUID_WILDCARD：接受来自任意 VM 的连接（全零 GUID）
-	// HV_GUID_CHILDREN 在没有运行中的子分区时会导致 listen() 返回 WSAEADDRNOTAVAIL，
-	// 使用 WILDCARD 避免启动时序依赖
-	addr.VmId      = HV_GUID_WILDCARD;
+	addr.VmId      = use_specific_vm_id_ ? vm_id_ : HV_GUID_WILDCARD;
 	addr.ServiceId = vsockPortToServiceId(vsock_port);
+
+	if (use_specific_vm_id_) {
+		LOG_INFO("vsock server: binding to specific VM RuntimeId");
+	} else {
+		LOG_WARN("vsock server: binding to HV_GUID_WILDCARD (WSL2 connections will NOT work)");
+	}
 
 	if (::bind(listen_sock_,
 	           reinterpret_cast<SOCKADDR*>(&addr),
@@ -325,6 +343,123 @@ void WindowsVsockServer::handleConnection(SOCKET client_sock)
 	}
 
 	LOG_INFO("vsock server: VM connection closed");
+}
+
+// ── discoverWsl2VmId ─────────────────────────────────────────────────────────
+
+bool discoverWsl2VmId(GUID* out)
+{
+	if (!out) { return false; }
+
+	HMODULE hcs = ::LoadLibraryW(L"ComputeCore.dll");
+	if (!hcs) {
+		LOG_WARN("vsock: ComputeCore.dll not available (requires Windows 10 2004+)");
+		return false;
+	}
+
+	using HcsCreateOperation_t = void* (*)(void*, void*);
+	using HcsEnumerate_t       = long (*)(const wchar_t*, void*);
+	using HcsWaitResult_t      = long (*)(void*, unsigned long, wchar_t**);
+	using HcsCloseOperation_t  = void (*)(void*);
+
+	auto* pCreate = reinterpret_cast<HcsCreateOperation_t>(
+	    ::GetProcAddress(hcs, "HcsCreateOperation"));
+	auto* pEnum = reinterpret_cast<HcsEnumerate_t>(
+	    ::GetProcAddress(hcs, "HcsEnumerateComputeSystems"));
+	auto* pWait = reinterpret_cast<HcsWaitResult_t>(
+	    ::GetProcAddress(hcs, "HcsWaitForOperationResult"));
+	auto* pClose = reinterpret_cast<HcsCloseOperation_t>(
+	    ::GetProcAddress(hcs, "HcsCloseOperation"));
+
+	if (!pCreate || !pEnum || !pWait || !pClose) {
+		LOG_WARN("vsock: HCS API functions not found in ComputeCore.dll");
+		::FreeLibrary(hcs);
+		return false;
+	}
+
+	void* op = pCreate(nullptr, nullptr);
+	if (!op) {
+		::FreeLibrary(hcs);
+		return false;
+	}
+
+	long hr = pEnum(nullptr, op);
+	if (hr != 0) {
+		LOG_WARN("vsock: HcsEnumerateComputeSystems failed, hr=0x{:08X}", static_cast<unsigned long>(hr));
+		pClose(op);
+		::FreeLibrary(hcs);
+		return false;
+	}
+
+	wchar_t* result_doc = nullptr;
+	hr = pWait(op, 5000, &result_doc);
+	pClose(op);
+	if (hr != 0 || !result_doc) {
+		LOG_WARN("vsock: HcsWaitForOperationResult failed or empty, hr=0x{:08X}", static_cast<unsigned long>(hr));
+		::FreeLibrary(hcs);
+		return false;
+	}
+
+	// wchar_t* → UTF-8 std::string
+	int utf8_len = ::WideCharToMultiByte(CP_UTF8, 0, result_doc, -1, nullptr, 0, nullptr, nullptr);
+	std::string json_utf8(static_cast<size_t>(utf8_len), '\0');
+	::WideCharToMultiByte(CP_UTF8, 0, result_doc, -1, json_utf8.data(), utf8_len, nullptr, nullptr);
+	::LocalFree(result_doc);
+
+	nlohmann::json systems;
+	try {
+		systems = nlohmann::json::parse(json_utf8);
+	} catch (const nlohmann::json::parse_error& e) {
+		LOG_WARN("vsock: failed to parse HCS JSON: {}", e.what());
+		::FreeLibrary(hcs);
+		return false;
+	}
+
+	if (!systems.is_array()) {
+		LOG_WARN("vsock: HCS result is not a JSON array");
+		::FreeLibrary(hcs);
+		return false;
+	}
+
+	// 查找 Owner == "WSL" 且 State == "Running" 的 VM
+	std::string runtime_id_str;
+	for (const auto& vm : systems) {
+		auto owner = vm.value("Owner", "");
+		auto state = vm.value("State", "");
+		if (owner == "WSL" && state == "Running") {
+			runtime_id_str = vm.value("RuntimeId", "");
+			break;
+		}
+	}
+
+	if (runtime_id_str.empty()) {
+		LOG_WARN("vsock: no running WSL VM found in HCS enumeration ({} systems total)",
+		         systems.size());
+		::FreeLibrary(hcs);
+		return false;
+	}
+
+	// 解析 RuntimeId GUID 字符串 "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+	unsigned long  d1;
+	unsigned short d2, d3;
+	unsigned char  d4[8];
+	bool found = (sscanf_s(runtime_id_str.c_str(),
+	    "%8lx-%4hx-%4hx-%2hhx%2hhx-%2hhx%2hhx%2hhx%2hhx%2hhx%2hhx",
+	    &d1, &d2, &d3,
+	    &d4[0], &d4[1], &d4[2], &d4[3], &d4[4], &d4[5], &d4[6], &d4[7]) == 11);
+
+	if (found) {
+		out->Data1 = d1;
+		out->Data2 = d2;
+		out->Data3 = d3;
+		for (int i = 0; i < 8; ++i) { out->Data4[i] = d4[i]; }
+		LOG_INFO("vsock: discovered WSL2 VM RuntimeId: {}", runtime_id_str);
+	} else {
+		LOG_WARN("vsock: failed to parse RuntimeId GUID: '{}'", runtime_id_str);
+	}
+
+	::FreeLibrary(hcs);
+	return found;
 }
 
 // ── 工厂函数 ─────────────────────────────────────────────────────────────────

@@ -32,6 +32,38 @@ static void blockTerminationSignals()
 #endif
 }
 
+#ifdef _WIN32
+static HANDLE g_single_instance_mutex = INVALID_HANDLE_VALUE;
+
+static bool acquireSingleInstanceMutex()
+{
+	g_single_instance_mutex = ::CreateMutexA(
+	    nullptr,
+	    FALSE,
+	    "Global\\ClawShellDaemon");
+	if (g_single_instance_mutex == nullptr || g_single_instance_mutex == INVALID_HANDLE_VALUE) {
+		std::cerr << "error: failed to create single-instance mutex, GetLastError="
+		          << ::GetLastError() << "\n";
+		return false;
+	}
+	if (::GetLastError() == ERROR_ALREADY_EXISTS) {
+		std::cerr << "error: another claw_shell_service instance is already running\n";
+		::CloseHandle(g_single_instance_mutex);
+		g_single_instance_mutex = INVALID_HANDLE_VALUE;
+		return false;
+	}
+	return true;
+}
+
+static void releaseSingleInstanceMutex()
+{
+	if (g_single_instance_mutex != INVALID_HANDLE_VALUE) {
+		::CloseHandle(g_single_instance_mutex);
+		g_single_instance_mutex = INVALID_HANDLE_VALUE;
+	}
+}
+#endif
+
 // parseArgs 解析命令行参数，将 CLI 覆盖值填入 DaemonConfig。
 //
 // 入参:
@@ -127,15 +159,31 @@ int main(int argc, char** argv)
 		return EXIT_SUCCESS;
 	}
 
+#ifdef _WIN32
+	if (!acquireSingleInstanceMutex()) {
+		return EXIT_FAILURE;
+	}
+#endif
+
 	clawshell::daemon::Daemon daemon;
 	auto status = daemon.init(config);
 	if (!status.ok()) {
 		LOG_ERROR("daemon init failed: {}", status.message);
+#ifdef _WIN32
+		releaseSingleInstanceMutex();
+#endif
 		return EXIT_FAILURE;
 	}
 
 	if (!daemon.run()) {
+#ifdef _WIN32
+		releaseSingleInstanceMutex();
+#endif
 		return EXIT_FAILURE;
 	}
+
+#ifdef _WIN32
+	releaseSingleInstanceMutex();
+#endif
 	return EXIT_SUCCESS;
 }

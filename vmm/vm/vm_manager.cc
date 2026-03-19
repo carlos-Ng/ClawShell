@@ -444,7 +444,7 @@ bool WslVMManager::createDistroViaCom(const DistroConfig& config)
 {
 	BSTR error_msg = nullptr;
 	const auto flags_com = static_cast<WslDistributionFlags>(
-		WSL_DISTRIBUTION_FLAGS_ENABLE_INTEROP | WSL_DISTRIBUTION_FLAGS_APPEND_NT_PATH);
+		0);
 	HRESULT hr = com_service_->RegisterDistribution(
 		config.name.c_str(),
 		config.rootfs_path.c_str(),
@@ -481,7 +481,7 @@ bool WslVMManager::createDistroViaApi(const DistroConfig& config)
 
 	// 配置 UID 和标志
 	const auto flags_api = static_cast<int>(
-		WSL_DISTRIBUTION_FLAGS_ENABLE_INTEROP | WSL_DISTRIBUTION_FLAGS_APPEND_NT_PATH);
+		0);
 	hr = WslConfigureDistribution(
 		config.name.c_str(),
 		config.default_uid,
