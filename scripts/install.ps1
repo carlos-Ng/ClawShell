@@ -467,23 +467,45 @@ if ($ReleaseUrl -match 'github\.com') {
 $ResolvedVersion = $Version
 if (-not $ResolvedVersion) {
     Write-Step "Querying latest version ..."
+    # Path A: use curl + GitHub API (avoid PowerShell web parser warnings)
     try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $apiResp = Invoke-RestMethod -Uri "https://api.github.com/repos/carlos-Ng/ClawShell/releases/latest" -ErrorAction Stop
-        $ResolvedVersion = $apiResp.tag_name -replace '^v', ''
-        Write-Ok "Latest version: $ResolvedVersion"
-    } catch {
-        Write-Warn "Cannot query GitHub API, will attempt direct download"
-        $ResolvedVersion = "latest"
+        $apiJson = & $CurlExe -s --fail --connect-timeout 10 "https://api.github.com/repos/carlos-Ng/ClawShell/releases/latest" 2>&1
+        if ($LASTEXITCODE -eq 0 -and $apiJson) {
+            $apiResp = $apiJson | ConvertFrom-Json
+            if ($apiResp.tag_name) {
+                $ResolvedVersion = ($apiResp.tag_name -replace '^v', '')
+                Write-Ok "Latest version: $ResolvedVersion"
+            }
+        }
+    } catch {}
+
+    # Path B: parse effective redirect URL of /releases/latest
+    if (-not $ResolvedVersion) {
+        Write-Warn "GitHub API unavailable, trying redirect-based version detection ..."
+        try {
+            $effectiveUrl = & $CurlExe -s -L -o NUL -w "%{url_effective}" --connect-timeout 10 "https://github.com/carlos-Ng/ClawShell/releases/latest" 2>&1
+            if ($LASTEXITCODE -eq 0 -and $effectiveUrl -match "/releases/tag/v([^/?#]+)") {
+                $ResolvedVersion = $Matches[1]
+                Write-Ok "Latest version (redirect): $ResolvedVersion"
+            }
+        } catch {}
+    }
+
+    # Path C: interactive fallback (do not hard fail immediately)
+    if (-not $ResolvedVersion) {
+        Write-Warn "Cannot auto-resolve latest version from GitHub."
+        $manualVersion = Read-Host "  Enter version manually (e.g. 0.1.1), or press Enter to cancel"
+        if ($manualVersion -match '^v(.+)$') { $manualVersion = $Matches[1] }
+        if (-not $manualVersion) {
+            Write-Err "No version provided. Installation cancelled."
+            exit 1
+        }
+        $ResolvedVersion = $manualVersion
     }
 }
 
-# Zip filename: version without "v" (matches CMake: clawshell-windows-<version>.zip)
-$WindowsZipName = if ($ResolvedVersion -eq "latest") {
-    "clawshell-windows.zip"
-} else {
-    "clawshell-windows-$ResolvedVersion.zip"
-}
+# Zip filename: always versioned (matches CMake: clawshell-windows-<version>.zip)
+$WindowsZipName = "clawshell-windows-$ResolvedVersion.zip"
 
 # Download Windows binary zip (needed for both upgrade and fresh install)
 $zipDest = Join-Path $DownloadDir $WindowsZipName
@@ -641,36 +663,10 @@ if (-not $isUpgrade) {
 
 Write-Step "Writing configuration ..."
 
-# Harden WSL boundary: disable Windows disk automount and Windows interop.
-# This reduces host exposure if VM is compromised.
-$wslConfContent = @"
-[user]
-default=clawshell
-
-[boot]
-systemd=true
-command=/bin/bash -c 'loginctl enable-linger clawshell 2>/dev/null; true'
-
-[network]
-generateResolvConf=true
-
-[automount]
-enabled=false
-mountFsTab=false
-
-[interop]
-enabled=false
-appendWindowsPath=false
-"@
-
-Write-Step "Hardening WSL isolation (disable /mnt/* automount and interop) ..."
-$exitCode = Invoke-WslSilent "-d $DistroName -u root -- bash -lc `"cat > /etc/wsl.conf`"" -InputText $wslConfContent
-if ($exitCode -eq 0) {
-    Write-Ok "WSL isolation policy applied (/etc/wsl.conf)"
-} else {
-    Write-Warn "Failed to update /etc/wsl.conf (exit code: $exitCode)"
-    Write-Warn "You can apply manually: wsl -d $DistroName -u root -- bash -lc 'cat > /etc/wsl.conf'"
-}
+# NOTE:
+# /etc/wsl.conf is pre-baked in rootfs and should not be rewritten here.
+# Runtime overwrite has caused invalid config state in the field
+# (default user fallback to root, /mnt/* remount, systemd/openclaw startup issues).
 
 # daemon.toml
 # 使用 LF 换行 + UTF-8 无 BOM，避免 toml++ 因 CRLF 或 BOM 解析失败
