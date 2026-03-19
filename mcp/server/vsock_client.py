@@ -208,8 +208,8 @@ class VsockClient:
             resp = self._recv_frame()
 
         if resp.get("success") is False:
-            code = resp.get("code", -1)
-            msg = resp.get("message", "未知错误")
+            code = resp.get("error_code", -1)
+            msg = resp.get("error_message", "未知错误")
             raise RuntimeError(f"宿主机拒绝请求 [{code}]: {msg}")
 
         return resp
@@ -279,7 +279,7 @@ class VsockClient:
 
     def list_windows(self) -> JSON:
         """list_windows 获取所有可见窗口列表。"""
-        return self.call_capability("ax", "list_windows", {})
+        return self.call_capability("capability_ax", "list_windows", {})
 
     def get_ui_tree(
         self,
@@ -288,7 +288,7 @@ class VsockClient:
         include_bounds: bool = False,
     ) -> JSON:
         """获取指定窗口的 UI 控件树。"""
-        return self.call_capability("ax", "get_ui_tree", {
+        return self.call_capability("capability_ax", "get_ui_tree", {
             "window_id": window_id,
             "max_depth": max_depth,
             "include_bounds": include_bounds,
@@ -296,37 +296,37 @@ class VsockClient:
 
     def click(self, element_path: str) -> JSON:
         """点击指定路径的 UI 控件。"""
-        return self.call_capability("ax", "click", {"element_path": element_path})
+        return self.call_capability("capability_ax", "click", {"element_path": element_path})
 
     def double_click(self, element_path: str) -> JSON:
         """双击指定路径的 UI 控件。"""
-        return self.call_capability("ax", "double_click", {"element_path": element_path})
+        return self.call_capability("capability_ax", "double_click", {"element_path": element_path})
 
     def right_click(self, element_path: str) -> JSON:
         """右键单击指定路径的 UI 控件。"""
-        return self.call_capability("ax", "right_click", {"element_path": element_path})
+        return self.call_capability("capability_ax", "right_click", {"element_path": element_path})
 
     def set_value(self, element_path: str, value: str) -> JSON:
         """向指定路径的输入控件设置文本值。"""
-        return self.call_capability("ax", "type_text", {
+        return self.call_capability("capability_ax", "set_value", {
             "element_path": element_path,
             "value": value,
         })
 
     def key_press(self, window_id: str, key: str) -> JSON:
         """向指定窗口发送按键事件。"""
-        return self.call_capability("ax", "press_key", {
-            "window_id": window_id,
+        return self.call_capability("capability_ax", "key_press", {
             "key": key,
+            "window_id": window_id,
         })
 
     def focus(self, element_path: str) -> JSON:
         """将输入焦点设置到指定控件。"""
-        return self.call_capability("ax", "focus", {"element_path": element_path})
+        return self.call_capability("capability_ax", "focus", {"element_path": element_path})
 
     def scroll(self, element_path: str, direction: str, amount: int) -> JSON:
         """在指定控件上执行滚动操作。"""
-        return self.call_capability("ax", "scroll", {
+        return self.call_capability("capability_ax", "scroll", {
             "element_path": element_path,
             "direction": direction,
             "amount": amount,
@@ -334,7 +334,7 @@ class VsockClient:
 
     def activate_window(self, window_id: str) -> JSON:
         """将指定窗口置于前台并激活。"""
-        return self.call_capability("ax", "activate_window", {"window_id": window_id})
+        return self.call_capability("capability_ax", "activate_window", {"window_id": window_id})
 
     def shell_exec(
         self, path: str, args: str = "", working_dir: str | None = None
@@ -343,37 +343,37 @@ class VsockClient:
         params: JSON = {"program": path, "args": args}
         if working_dir:
             params["working_dir"] = working_dir
-        return self.call_capability("ax", "shell_exec", params)
+        return self.call_capability("capability_ax", "shell_exec", params)
 
     def minimize_all(self) -> JSON:
         """最小化所有可见窗口。"""
-        return self.call_capability("ax", "minimize_all", {})
+        return self.call_capability("capability_ax", "minimize_all", {})
 
     def wait_window(self, title_contains: str, timeout_ms: int = 10000) -> JSON:
         """轮询直到找到标题包含指定子串的窗口或超时。"""
-        return self.call_capability("ax", "wait_window", {
+        return self.call_capability("capability_ax", "wait_window", {
             "title_contains": title_contains,
             "timeout": timeout_ms,
         })
 
     def get_sysinfo(self) -> JSON:
         """获取宿主机系统信息。"""
-        return self.call_capability("ax", "get_sysinfo", {})
+        return self.call_capability("capability_ax", "get_sysinfo", {})
 
     def move_mouse(self, x: int, y: int) -> JSON:
         """将鼠标移动到屏幕绝对坐标。"""
-        return self.call_capability("ax", "move_mouse", {"x": x, "y": y})
+        return self.call_capability("capability_ax", "move_mouse", {"x": x, "y": y})
 
     def type_keyboard(self, window_id: str, text: str) -> JSON:
         """使用键盘输入文本。"""
-        return self.call_capability("ax", "type_keyboard", {
+        return self.call_capability("capability_ax", "type_keyboard", {
             "window_id": window_id,
             "text": text,
         })
 
     def write_file(self, path: str, content: str, encoding: str = "utf8") -> JSON:
         """在宿主机上写入文本文件。"""
-        return self.call_capability("ax", "write_file", {
+        return self.call_capability("capability_ax", "write_file", {
             "path": path,
             "content": content,
             "encoding": encoding,
@@ -381,7 +381,7 @@ class VsockClient:
 
     def drag_window(self, window_id: str, target_x: int, target_y: int) -> JSON:
         """拖拽窗口到目标坐标。"""
-        return self.call_capability("ax", "drag_window", {
+        return self.call_capability("capability_ax", "drag_window", {
             "window_id": window_id,
             "target_x": target_x,
             "target_y": target_y,
@@ -389,15 +389,15 @@ class VsockClient:
 
     def mouse_click(self, x: int, y: int) -> JSON:
         """移动鼠标到坐标并单击左键。"""
-        return self.call_capability("ax", "mouse_click", {"x": x, "y": y})
+        return self.call_capability("capability_ax", "mouse_click", {"x": x, "y": y})
 
     def get_window_rect(self, window_id: str) -> JSON:
         """获取窗口矩形信息。"""
-        return self.call_capability("ax", "get_window_rect", {"window_id": window_id})
+        return self.call_capability("capability_ax", "get_window_rect", {"window_id": window_id})
 
     def set_topmost(self, window_id: str, enabled: bool) -> JSON:
         """设置窗口置顶/取消置顶。"""
-        return self.call_capability("ax", "set_topmost", {
+        return self.call_capability("capability_ax", "set_topmost", {
             "window_id": window_id,
             "enabled": enabled,
         })
@@ -413,4 +413,4 @@ class VsockClient:
         if plan:
             params["plan"] = plan
         params.update(kwargs)
-        return self.call_capability("ax", "security_hook", params)
+        return self.call_capability("capability_ax", "security_hook", params)
