@@ -23,7 +23,7 @@
 #include <string>
 
 #ifndef CLAWSHELL_VERSION
-#define CLAWSHELL_VERSION "0.1.0"
+#define CLAWSHELL_VERSION "0.1.1"
 #endif
 
 static bool parseArgs(int argc, char** argv, clawshell::vmm::VmmConfig& config)

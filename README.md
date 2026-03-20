@@ -71,6 +71,36 @@ irm https://github.com/carlos-Ng/ClawShell/releases/download/v0.1.0/install.ps1 
 
 安装程序会自动完成：检查 WSL2、下载组件、导入 VM 镜像、配置 AI 后端、生成 Gateway Token、配置开机自启并启动 ClawShell。安装结束后终端会显示 OpenClaw WebUI 地址与 Token。
 
+### 离线安装（本地包）
+
+适用于网络受限场景。先从 Release 页面下载以下文件到本地：
+
+- `install.ps1`
+- `clawshell-windows-<ver>.zip`
+- `clawshell-rootfs.tar.gz`
+
+#### 默认离线模式（仅 `-Offline`）
+
+将三个文件放在同一目录后执行：
+
+```powershell
+.\install.ps1 -Offline
+```
+
+脚本会自动在 `install.ps1` 同级目录搜索安装包并开始安装。
+
+#### 进阶离线模式（手动指定路径）
+
+```powershell
+# 方式 1：分别指定 zip 和 rootfs
+.\install.ps1 -Offline -WindowsZipPath "D:\pkg\clawshell-windows-0.1.1.zip" -RootfsPath "D:\pkg\clawshell-rootfs.tar.gz"
+
+# 方式 2：指定包含资源的目录（脚本会自动搜索）
+.\install.ps1 -Offline -AssetDir "D:\pkg"
+```
+
+> 当前版本离线模式仅支持全新安装，离线升级暂不支持。
+
 ### 升级与卸载
 
 ```powershell
@@ -183,16 +213,16 @@ daemon 与宿主机 WinForms UI 之间的双向事件通道：
 
 ```powershell
 # 配置
-cmake -S . -B build
+cmake -S . -B build-release
 
 # 编译
-cmake --build build
+cmake --build build-release --config Release
 
 # 生成 dist 发布目录（exe + dll + config）
-cmake --build build --target dist
+cmake --build build-release --config Release --target dist
 
 # 打包 Release zip（供 GitHub Release 上传）
-cmake --build build --target release
+cmake --build build-release --config Release --target release
 # 输出：clawshell-windows-<version>.zip（位于项目根目录）
 ```
 
@@ -280,7 +310,7 @@ bash scripts/build-rootfs.sh
 
 | 文件 | 来源 |
 |------|------|
-| `clawshell-windows-<ver>.zip` | `cmake --build build --target release` 生成 |
+| `clawshell-windows-<ver>.zip` | `cmake --build build-release --config Release --target release` 生成 |
 | `clawshell-rootfs.tar.gz` | `bash scripts/build-rootfs.sh` 生成 |
 | `install.ps1` | `scripts/install.ps1` |
 
