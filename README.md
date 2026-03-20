@@ -1,294 +1,297 @@
 # ClawShell
 
-ClawShell 是为 **AI Agent** 设计的**宿主机侧能力网关**。它使用虚拟化技术将 AI Agent 隔离在独立环境中运行，同时将其能力安全、可控地延伸到宿主机，使 Agent 能够在用户授权与审查下操作真实桌面。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-**核心理念**：AI Agent 运行在隔离环境中，通过 ClawShell 这扇受控的窗户访问宿主机；所有操作经安全网关审查，用户始终掌握最终决策权。
+ClawShell is a **host-side capability gateway** designed for **AI agents**. It uses virtualization to isolate the agent in a separate environment while extending carefully controlled host capabilities back to that agent, allowing it to operate on the real desktop under user authorization and review.
+
+**Core idea**: the AI agent runs inside an isolated environment and accesses the host only through ClawShell's controlled window; every action is reviewed by the security gateway, and the user always keeps the final decision.
 
 ---
 
-## 项目愿景
+## Vision
 
-系统由两个隔离域构成：
+The system consists of two isolated domains:
 
-| 域 | 组成 | 职责 |
+| Domain | Components | Responsibility |
 |----|------|------|
-| **隔离环境** | AI Agent + MCP Client | Agent 在虚拟化环境中运行，无法直接访问宿主机 |
-| **宿主机** | ClawShell daemon + 能力插件 + WinForms UI | 接收 Agent 请求，经安全审查后执行 GUI 操作 |
+| **Isolated environment** | AI Agent + MCP Client | The agent runs inside a virtualized environment and cannot access the host directly |
+| **Host machine** | ClawShell daemon + capability plugins + WinForms UI | Receives agent requests and executes GUI operations after security review |
 
-Agent 想做任何事，必须经过 ClawShell 的审批。安全网关运行在宿主机上，独立于 Agent，即使 Agent 被劫持，攻击者能发出的也只是「请求」，能否执行由宿主机单独决定。
+If the agent wants to do anything, it must go through ClawShell approval. The security gateway runs on the host independently from the agent, so even if the agent is compromised, an attacker can only issue "requests"; whether they are executed is decided solely by the host side.
 
-**能力延伸**：ClawShell 将宿主机的能力（窗口枚举、UI 树获取、点击、输入、滚动、按键等）以 MCP Tool 形式暴露给 Agent，使 Agent 在隔离环境中仍能操作用户真实桌面，但全程处于安全可控状态。
-
----
-
-## 特性
-
-- **虚拟化隔离** — AI Agent 运行在独立环境中，无法直接访问宿主机，所有操作经 ClawShell 网关审批
-- **能力延伸** — 将宿主机 GUI 能力以 MCP Tool 形式安全暴露给 Agent，支持窗口枚举、UI 树、点击、输入等
-- **结构化 GUI 描述** — 使用 UI Automation 输出 AXT 紧凑文本，无需截图，纯文本模型即可理解
-- **安全网关** — 操作前/后双向审查，危险操作需用户确认，用户始终掌握最终决策权
-- **意图指纹缓存** — 用户勾选「本任务内不再询问」后，相同类型操作自动放行，减少重复弹窗
-- **任务生命周期管理** — 每次 Agent 会话对应一个任务，授权缓存随任务结束自动清除，防止权限跨任务扩散
-- **UI 事件总线** — WinForms UI 通过 Channel 2 实时接收任务状态、操作日志与确认请求
-- **C++ 实现** — 宿主机 daemon 单一二进制分发，无需 Python 运行时
-- **MCP 协议** — 兼容 Claude Desktop、Cursor、OpenClaw 等 MCP 客户端
+**Capability extension**: ClawShell exposes host capabilities such as window enumeration, UI tree retrieval, clicking, input, scrolling, and key operations as MCP tools. This lets an agent running in an isolated environment operate on the real desktop while remaining fully observable and controllable.
 
 ---
 
-## 快速安装（推荐）
+## Features
 
-### 系统要求
+- **Virtualized isolation** - The AI agent runs in an isolated environment and cannot directly access the host; all operations go through ClawShell approval
+- **Capability extension** - Host GUI capabilities are safely exposed as MCP tools, including window enumeration, UI tree access, clicking, input, and more
+- **Structured GUI descriptions** - UI Automation is serialized into compact AXT text so text-only models can understand the UI without screenshots
+- **Security gateway** - Bidirectional review before and after execution; dangerous operations require user confirmation, and the user always has final control
+- **Intent fingerprint cache** - If the user selects "do not ask again within this task", repeated operations of the same type are auto-approved to reduce duplicate prompts
+- **Task lifecycle management** - Each agent session maps to a task, and authorization cache is cleared automatically when the task ends to prevent permission leakage across tasks
+- **UI event bus** - The WinForms UI receives task status, operation logs, and confirmation requests in real time through Channel 2
+- **C++ implementation** - The host daemon ships as a single binary with no Python runtime required
+- **MCP protocol** - Compatible with MCP clients such as Claude Desktop, Cursor, and OpenClaw
 
-| 要求 | 说明 |
+---
+
+## Quick Install
+
+### System Requirements
+
+| Requirement | Details |
 |------|------|
-| Windows 10 2004 (Build 19041) 或更高 | WSL2 最低要求 |
-| WSL2 已启用 | 见下方说明 |
-| 硬盘空间 ≥ 4 GB | rootfs + 二进制文件 |
-| 内存 ≥ 8 GB | WSL2 + Agent 运行 |
+| Windows 10 2004 (Build 19041) or later | Minimum requirement for WSL2 |
+| WSL2 enabled | See instructions below |
+| Disk space >= 4 GB | For rootfs and binaries |
+| Memory >= 8 GB | For WSL2 and agent runtime |
 
-**WSL2 未安装时**，在管理员 PowerShell 中执行：
+If **WSL2 is not installed yet**, run the following in an elevated PowerShell:
 
 ```powershell
 wsl --install --no-distribution
 ```
 
-安装完成后**重启电脑**，再继续。
+After installation, **restart the computer** before continuing.
 
-### 一键安装
+### One-Command Install
 
-在 **PowerShell** 中执行（无需管理员权限）：
+Run this in **PowerShell** with normal user permissions:
 
 ```powershell
-# 安装最新版本
+# Install the latest version
 irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 | iex
 
-# 安装指定版本
+# Install a specific version
 irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 | iex -Version 0.1.0
 
-# 或直接下载该版本的安装脚本（URL 本身固定了版本，无需 -Version 参数）
+# Or download the installer script for a fixed version directly
+# The version is already encoded in the URL, so -Version is not needed
 irm https://github.com/carlos-Ng/ClawShell/releases/download/v0.1.0/install.ps1 | iex
 ```
 
-安装程序会自动完成：检查 WSL2、下载组件、导入 VM 镜像、配置 AI 后端、生成 Gateway Token、配置开机自启并启动 ClawShell。安装结束后终端会显示 OpenClaw WebUI 地址与 Token。
+The installer automatically checks WSL2, downloads components, imports the VM image, configures the AI backend, generates a gateway token, enables auto-start, and launches ClawShell. At the end, the terminal prints the OpenClaw WebUI URL and token.
 
-### 升级与卸载
+### Upgrade and Uninstall
 
 ```powershell
-# 升级到最新版（保留数据）
+# Upgrade to the latest version while preserving data
 irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 | iex -Upgrade
 
-# 卸载
+# Uninstall
 irm https://github.com/carlos-Ng/ClawShell/releases/latest/download/install.ps1 | iex -Uninstall
 ```
 
 ---
 
-## 首次使用
+## First Run
 
-1. **确认 ClawShell 运行**：系统托盘出现 ClawShell 图标，或手动启动 `%LOCALAPPDATA%\ClawShell\bin\claw_shell_ui.exe`
-2. **访问 OpenClaw**：浏览器打开 `http://localhost:18789`，输入安装时显示的 Token（保存在 `%LOCALAPPDATA%\ClawShell\gateway-token.txt`）
-3. **Claude Desktop 集成**：在 `%APPDATA%\Claude\claude_desktop_config.json` 的 `mcpServers` 中添加 `clawshell`，`args` 指向 `%LOCALAPPDATA%\ClawShell\mcp\mcp_server.py`
+1. **Confirm ClawShell is running**: check for the ClawShell tray icon, or launch `%LOCALAPPDATA%\ClawShell\bin\claw_shell_ui.exe` manually
+2. **Open OpenClaw**: visit `http://localhost:18789` in a browser and enter the token shown during installation, or read it from `%LOCALAPPDATA%\ClawShell\gateway-token.txt`
+3. **Integrate Claude Desktop**: add `clawshell` to `mcpServers` in `%APPDATA%\Claude\claude_desktop_config.json`, with `args` pointing to `%LOCALAPPDATA%\ClawShell\mcp\mcp_server.py`
 
 ---
 
-## 架构概览
+## Architecture Overview
 
 ```
 ╔══════════════════════════════════════════════════════════════╗
-║  隔离环境（WSL2 虚拟机）                                      ║
+║  Isolated Environment                                       ║
 ║  ┌────────────────────────────────────────────────────────┐  ║
-║  │  AI Agent（OpenClaw / Claude Desktop / Cursor 等）      │  ║
+║  │  AI Agent (OpenClaw / Claude Desktop / Cursor / etc.) │  ║
 ║  └────────────────────────────┬───────────────────────────┘  ║
 ║                               │ MCP (stdio)                  ║
 ║  ┌────────────────────────────▼───────────────────────────┐  ║
-║  │  mcp_server.py — MCP 协议桥接，通过 AF_VSOCK 转发       │  ║
+║  │  mcp_server.py - MCP bridge forwarding via AF_VSOCK   │  ║
 ║  └────────────────────────────┬───────────────────────────┘  ║
 ╚═══════════════════════════════╪══════════════════════════════╝
-                                │ Channel 3（AF_VSOCK）
+                                │ Channel 3 (AF_VSOCK)
 ╔═══════════════════════════════╪══════════════════════════════╗
-║  宿主机                        ▼                              ║
+║  Host Machine                 ▼                              ║
 ║  ┌────────────────────────────────────────────────────────┐  ║
-║  │  claw_shell_service + VsockServer + claw_shell_vmm       │  ║
-║  │  ├── TaskRegistry、SecurityChain、CapabilityService     │  ║
-║  │  ├── capability_ax.dll、security_filter.dll             │  ║
-║  │  └── UIService — Channel 2 事件总线                     │  ║
+║  │  claw_shell_service + VsockServer + claw_shell_vmm    │  ║
+║  │  ├── TaskRegistry, SecurityChain, CapabilityService   │  ║
+║  │  ├── capability_ax.dll, security_filter.dll          │  ║
+║  │  └── UIService - Channel 2 event bus                  │  ║
 ║  └──────────────────────┬─────────────────────────────────┘  ║
-║                         │ Channel 2（Named Pipe）             ║
+║                         │ Channel 2 (Named Pipe)             ║
 ║                         ▼ status/task/op_log/confirm         ║
 ║  ┌─────────────────────────────────────────────────────────┐  ║
-║  │  ClawShell UI (WinForms) — 托盘 · 任务监控 · 确认弹窗     │  ║
+║  │  ClawShell UI (WinForms) - tray, task monitor, prompts │  ║
 ║  └─────────────────────────────────────────────────────────┘  ║
 ╚══════════════════════════════════════════════════════════════╝
 ```
 
-> **Phase 1 兼容**：MCP Server 也可直接运行在宿主机，通过 Named Pipe 与 daemon 通信，用于开发调试与 Claude Desktop 等本地 MCP 客户端集成。
+> **Phase 1 compatibility**: the MCP Server can also run directly on the host and communicate with the daemon through a Named Pipe for local development, debugging, and integration with local MCP clients such as Claude Desktop.
 
 ---
 
-## IPC 通道
+## IPC Channels
 
-ClawShell 使用两条独立的 Named Pipe 通道：
+ClawShell uses two independent Named Pipe channels:
 
-### Channel 1：VM → Daemon（能力调用）
+### Channel 1: VM -> Daemon (Capability Invocation)
 
-MCP Server 与 daemon 之间的主通信通道，使用类型化消息协议：
+The main communication channel between the MCP Server and the daemon uses a typed message protocol:
 
-| 消息类型 | 方向 | 说明 |
+| Message Type | Direction | Description |
 |---------|------|------|
-| `beginTask` | VM→Daemon | 开始一个 Agent 任务，返回 `task_id` |
-| `endTask` | VM→Daemon | 结束任务（通知语义，无响应） |
-| `capability` | VM→Daemon | 调用能力（携带 `task_id`、操作名、参数） |
-| `capability_result` | Daemon→VM | 能力调用结果（成功或失败） |
+| `beginTask` | VM->Daemon | Starts an agent task and returns `task_id` |
+| `endTask` | VM->Daemon | Ends the task (notification semantics, no response) |
+| `capability` | VM->Daemon | Invokes a capability with `task_id`, operation name, and parameters |
+| `capability_result` | Daemon->VM | Returns the result of a capability call, success or failure |
 
-### Channel 2：Daemon ↔ UI（事件总线）
+### Channel 2: Daemon <-> UI (Event Bus)
 
-daemon 与宿主机 WinForms UI 之间的双向事件通道：
+The bidirectional event bus between the daemon and the host WinForms UI:
 
-| 消息类型 | 方向 | 说明 |
+| Message Type | Direction | Description |
 |---------|------|------|
-| `status` | Daemon→UI | daemon 连接状态 |
-| `task_begin` | Daemon→UI | 任务开始通知 |
-| `task_end` | Daemon→UI | 任务结束通知 |
-| `op_log` | Daemon→UI | 操作日志（allowed / confirmed / denied） |
-| `confirm` | Daemon→UI | 需用户确认的操作请求 |
-| `confirm_response` | UI→Daemon | 用户确认结果（含 `trust_fingerprint`） |
+| `status` | Daemon->UI | Daemon connection status |
+| `task_begin` | Daemon->UI | Task started notification |
+| `task_end` | Daemon->UI | Task ended notification |
+| `op_log` | Daemon->UI | Operation log (`allowed` / `confirmed` / `denied`) |
+| `confirm` | Daemon->UI | Operation request that requires user confirmation |
+| `confirm_response` | UI->Daemon | User response, including `trust_fingerprint` |
 
 ---
 
-## 支持的操作
+## Supported Operations
 
-| 操作 | 说明 |
+| Operation | Description |
 |------|------|
-| `list_windows` | 枚举可访问的顶层窗口 |
-| `get_ui_tree` | 获取窗口的 UI 元素树（AXT 格式） |
-| `click` / `double_click` / `right_click` | 点击元素 |
-| `set_value` | 向输入框写入文本 |
-| `focus` | 将焦点移至元素 |
-| `scroll` | 滚动可滚动区域 |
-| `key_press` / `key_combo` | 按键与组合键 |
-| `activate_window` | 激活窗口到前台 |
+| `list_windows` | Enumerate accessible top-level windows |
+| `get_ui_tree` | Retrieve a window's UI element tree in AXT format |
+| `click` / `double_click` / `right_click` | Click an element |
+| `set_value` | Write text into an input box |
+| `focus` | Move focus to an element |
+| `scroll` | Scroll a scrollable region |
+| `key_press` / `key_combo` | Send keystrokes and key combinations |
+| `activate_window` | Bring a window to the foreground |
 
 ---
 
-## 构建
+## Build
 
-### 环境要求
+### Prerequisites
 
-- Windows 10 及以上
+- Windows 10 or later
 - CMake 3.20+
-- Visual Studio 2022（或 Ninja + MSVC）
-- C++20 编译器
+- Visual Studio 2022 (or Ninja + MSVC)
+- A C++20 compiler
 
-### 构建步骤
+### Build Steps
 
 ```powershell
-# 配置
+# Configure
 cmake -S . -B build
 
-# 编译
+# Build
 cmake --build build
 
-# 生成 dist 发布目录（exe + dll + config）
+# Generate the dist directory (exe + dll + config)
 cmake --build build --target dist
 
-# 打包 Release zip（供 GitHub Release 上传）
+# Package the Release zip for GitHub Releases
 cmake --build build --target release
-# 输出：clawshell-windows-<version>.zip（位于项目根目录）
+# Output: clawshell-windows-<version>.zip (in the project root)
 ```
 
-### 构建产物
+### Build Outputs
 
-| 路径 | 说明 |
+| Path | Description |
 |------|------|
-| `build\Debug\claw_shell_service.exe` | 主 daemon |
-| `build\Debug\claw_shell_vmm.exe` | VM 管理器 |
-| `build\daemon-service\Debug\capability_ax.dll` | AX 能力模块 |
-| `build\Debug\security_filter.dll` | 安全过滤模块 |
-| `ui\bin\Release\net8.0-windows\win-x64\publish\claw_shell_ui.exe` | 托盘 UI |
-| `dist\` | 发布目录（`--target dist` 后生成） |
+| `build\Debug\claw_shell_service.exe` | Main daemon |
+| `build\Debug\claw_shell_vmm.exe` | VM manager |
+| `build\daemon-service\Debug\capability_ax.dll` | AX capability module |
+| `build\Debug\security_filter.dll` | Security filter module |
+| `ui\bin\Release\net8.0-windows\win-x64\publish\claw_shell_ui.exe` | Tray UI |
+| `dist\` | Distribution directory generated after `--target dist` |
 
 ---
 
-## 运行
+## Run
 
-### 方式一：从 dist 目录运行（推荐）
+### Option 1: Run from the `dist` directory (Recommended)
 
 ```powershell
 cd dist
 .\bin\claw_shell_service.exe -f -c config\clawshell.toml
 ```
 
-`-f` 表示前台运行，日志输出到控制台。
+`-f` means foreground mode and prints logs to the console.
 
-### 方式二：从项目根目录运行（开发模式）
+### Option 2: Run from the project root (Development mode)
 
 ```powershell
 .\build\Debug\claw_shell_service.exe -f
 ```
 
-顶层 `clawshell.toml` 的 `module_dir` 指向 `build\daemon-service`，适合开发调试。
+The top-level `clawshell.toml` points `module_dir` to `build\daemon-service`, which is convenient for development and debugging.
 
-### 命令行参数
+### Command-Line Arguments
 
-| 参数 | 说明 |
+| Argument | Description |
 |------|------|
-| `-c, --config <path>` | 配置文件路径（默认 `clawshell.toml`） |
-| `-f, --foreground` | 前台运行，日志输出到控制台 |
-| `--log-level <level>` | 日志级别：trace / debug / info / warn / error |
-| `--socket <path>` | 覆盖 Channel 1 管道路径 |
-| `--module-dir <path>` | 覆盖模块 DLL 目录 |
+| `-c, --config <path>` | Configuration file path, default `clawshell.toml` |
+| `-f, --foreground` | Run in foreground mode and print logs to the console |
+| `--log-level <level>` | Log level: `trace`, `debug`, `info`, `warn`, `error` |
+| `--socket <path>` | Override the Channel 1 pipe path |
+| `--module-dir <path>` | Override the module DLL directory |
 
 ---
 
-## 测试工具
+## Test Utilities
 
-### 安装 Python 依赖
+### Install Python Dependencies
 
 ```powershell
 pip install -r tools\requirements.txt
 ```
 
-### AX 测试客户端（直连 Channel 1）
+### AX Test Client (Direct Channel 1 Access)
 
 ```powershell
-# 先启动 daemon，再在另一终端运行
+# Start the daemon first, then run this in another terminal
 python tools\ax_test_client.py
 
-# 批量执行脚本
+# Run a script in batch mode
 python tools\ax_test_client.py -f tools\scripts\01_normal_task.txt
 ```
 
-### MCP Server（供 AI Agent 使用）
+### MCP Server (for AI Agents)
 
 ```powershell
 python tools\mcp_server.py
 ```
 
-### 构建 VM rootfs
+### Build the VM Rootfs
 
-rootfs 包含 WSL2 虚拟机镜像（Debian + OpenClaw + ClawShell MCP Server）。在 Linux/WSL2 环境中执行：
+The rootfs contains the WSL2 VM image (Debian + OpenClaw + ClawShell MCP Server). Run this in Linux or WSL2:
 
 ```bash
 bash scripts/build-rootfs.sh
 ```
 
-生成 `clawshell-rootfs.tar.gz`，上传到 GitHub Release 供 `install.ps1` 下载。
+This produces `clawshell-rootfs.tar.gz`, which can then be uploaded to GitHub Releases for `install.ps1` to download.
 
-### 发布 Release
+### Publish a Release
 
-每次发布时，将以下文件上传到 GitHub Release（tag 格式：`v<version>`）：
+For each release, upload the following files to the GitHub Release page (tag format: `v<version>`):
 
-| 文件 | 来源 |
+| File | Source |
 |------|------|
-| `clawshell-windows-<ver>.zip` | `cmake --build build --target release` 生成 |
-| `clawshell-rootfs.tar.gz` | `bash scripts/build-rootfs.sh` 生成 |
+| `clawshell-windows-<ver>.zip` | Generated by `cmake --build build --target release` |
+| `clawshell-rootfs.tar.gz` | Generated by `bash scripts/build-rootfs.sh` |
 | `install.ps1` | `scripts/install.ps1` |
 
 ---
 
-## 与 Claude Desktop 集成
+## Claude Desktop Integration
 
-在 `%APPDATA%\Claude\claude_desktop_config.json` 中添加：
+Add the following to `%APPDATA%\Claude\claude_desktop_config.json`:
 
 ```json
 {
@@ -301,79 +304,79 @@ bash scripts/build-rootfs.sh
 }
 ```
 
-将 `C:\path\to\ClawShell` 替换为实际项目路径。
+Replace `C:\path\to\ClawShell` with the actual project path.
 
 ---
 
-## 安全机制
+## Security Model
 
-### 安全审查链
+### Security Review Chain
 
-每次能力调用依次经过安全模块的 `preHook`（入站审查）和 `postHook`（出站过滤）：
+Each capability invocation passes through the security module's `preHook` (inbound review) and `postHook` (outbound filtering) in sequence:
 
 ```
-请求到达
+Request arrives
   │
-  ▼ preHook（执行前）
-  │  Deny        → 拒绝，不执行，推送 op_log(denied/rule_deny)
-  │  NeedConfirm → 检查意图指纹缓存
-  │                └─ 命中  → 直接放行，推送 op_log(allowed/fingerprint_cache)
-  │                └─ 未命中 → 向 UI 弹出确认弹窗
-  │                           └─ 拒绝 → 推送 op_log(denied/user_confirm)
-  │                           └─ 确认 → 可选缓存指纹，推送 op_log(confirmed/user_confirm)
-  │  Pass        → 继续
+  ▼ preHook (before execution)
+  │  Deny        -> Reject, do not execute, push op_log(denied/rule_deny)
+  │  NeedConfirm -> Check intent fingerprint cache
+  │                └─ Hit      -> Allow directly, push op_log(allowed/fingerprint_cache)
+  │                └─ Miss     -> Show confirmation dialog in UI
+  │                               └─ Reject  -> Push op_log(denied/user_confirm)
+  │                               └─ Confirm -> Optionally cache fingerprint, push op_log(confirmed/user_confirm)
+  │  Pass        -> Continue
   │
-  ▼ 能力执行
+  ▼ Capability execution
   │
-  ▼ postHook（执行后）
-  │  可对返回内容脱敏
+  ▼ postHook (after execution)
+  │  May redact sensitive return values
   │
-  ▼ 返回结果，推送 op_log(allowed/auto_allow)
+  ▼ Return result, push op_log(allowed/auto_allow)
 ```
 
-**裁决合并**：多个安全模块按优先级执行，最严格者胜出（Deny > NeedConfirm > Pass > Skip）。
+**Decision merging**: multiple security modules run by priority, and the strictest verdict wins (`Deny > NeedConfirm > Pass > Skip`).
 
-### 意图指纹缓存
+### Intent Fingerprint Cache
 
-当用户在确认弹窗中勾选「本任务内相同操作不再询问」时，框架将该操作类型缓存为意图指纹（capability + operation）。同一任务内再次触发相同操作时直接放行，无需重复弹窗。任务结束时缓存自动清除，防止授权跨任务扩散。
+If the user checks "do not ask again for the same operation within this task" in the confirmation dialog, the framework caches an intent fingerprint for that operation type (`capability + operation`). When the same operation is triggered again within the same task, it is allowed directly without another prompt. The cache is cleared automatically when the task ends so authorization does not leak across tasks.
 
-### 规则配置
+### Rule Configuration
 
-安全规则在 `config/security_filter_rules.toml` 中配置：
+Security rules are configured in `config/security_filter_rules.toml`:
 
 ```toml
-# 拒绝规则
+# Deny rule
 [[deny]]
 capability = "capability_ax"
 operations = ["key_combo"]
 params_field = "keys"
 params_patterns = ["Win", "Cmd"]
-reason = "Win/Cmd 组合键可触发系统级操作，已拦截"
+reason = "Win/Cmd combinations can trigger system-level operations and are blocked"
 
-# 确认规则（需用户确认）
+# Confirmation rule
 [[confirm]]
 capability = "capability_ax"
 operations = ["click", "double_click", "right_click"]
-reason = "GUI 点击操作需用户确认"
+reason = "GUI click operations require user confirmation"
 ```
 
 ---
 
-## 配置说明
+## Configuration
 
-### 主配置（clawshell.toml）
+### Main Config (`clawshell.toml`)
 
 ```toml
 [daemon]
-socket_path      = "\\\\.\\pipe\\crew-shell-service"  # Channel 1 管道
+socket_path      = "\\\\.\\pipe\\crew-shell-service"  # Channel 1 pipe
 thread_pool_size = 4
 log_level        = "debug"
-module_dir       = "lib"                              # DLL 目录（相对 dist）
+module_dir       = "lib"                              # DLL directory (relative to dist)
 
 [ui]
-pipe_path    = "\\\\.\\pipe\\crew-shell-service-ui"   # Channel 2 管道
+pipe_path    = "\\\\.\\pipe\\crew-shell-service-ui"   # Channel 2 pipe
 timeout_mode = "timeout_deny"   # wait_forever / timeout_deny / timeout_allow
-timeout_secs = 60               # 用户无响应超时（秒），wait_forever 时忽略
+timeout_secs = 60               # user response timeout in seconds; ignored when wait_forever
 
 [[modules]]
 name = "capability_ax"
@@ -384,61 +387,61 @@ priority   = 10
 rules_file = "config\\security_filter_rules.toml"
 ```
 
-### timeout_mode 说明
+### `timeout_mode` Explained
 
-| 值 | 行为 |
+| Value | Behavior |
 |----|------|
-| `timeout_deny` | 超时后自动拒绝（默认，安全优先） |
-| `timeout_allow` | 超时后自动允许（应用优先） |
-| `wait_forever` | 无限等待用户响应 |
+| `timeout_deny` | Automatically deny on timeout (default, security first) |
+| `timeout_allow` | Automatically allow on timeout (app first) |
+| `wait_forever` | Wait indefinitely for user input |
 
-### 路径说明
+### Path Notes
 
-- **从 dist 运行**：`module_dir = "lib"`，`rules_file` 使用 `config\` 相对路径
-- **从项目根运行**：使用顶层 `clawshell.toml`，`module_dir = "build\\daemon-service"`
+- **Running from `dist`**: use `module_dir = "lib"` and a relative `config\` path for `rules_file`
+- **Running from the project root**: use the top-level `clawshell.toml`, where `module_dir = "build\\daemon-service"`
 
 ---
 
-## 项目结构
+## Project Structure
 
 ```
 ClawShell/
-├── include/                    # 公开头文件
-├── daemon-service/             # C++ daemon 实现
-├── vmm/                        # VM 管理器（claw_shell_vmm.exe）
-├── ui/                         # ClawShell WinForms UI（C# .NET 8）
-├── mcp/                        # MCP Server（Python，运行在 VM 内）
-├── config/                     # 配置文件模板
-├── scripts/                    # build-rootfs.sh、install.ps1
-├── tools/                      # 开发测试工具（Python）
-├── tests/                      # 单元测试
-├── third_party/                # 第三方 header-only 库
-└── clawshell.toml              # 项目根开发配置
+├── include/                    # Public headers
+├── daemon-service/             # C++ daemon implementation
+├── vmm/                        # VM manager (claw_shell_vmm.exe)
+├── ui/                         # ClawShell WinForms UI (C# .NET 8)
+├── mcp/                        # MCP server implementation
+├── config/                     # Configuration templates
+├── scripts/                    # build-rootfs.sh, install.ps1
+├── tools/                      # Development and testing tools (Python)
+├── tests/                      # Unit tests
+├── third_party/                # Third-party header-only libraries
+└── clawshell.toml              # Root config for development
 ```
 
 ---
 
-## 技术栈
+## Tech Stack
 
-| 组件 | 选型 |
+| Component | Choice |
 |------|------|
-| 语言 | C++20 |
-| 构建 | CMake |
+| Language | C++20 |
+| Build | CMake |
 | JSON | nlohmann/json |
-| 错误处理 | tl::expected |
-| 日志 | spdlog |
-| 配置 | toml++ |
-| 命令行 | cxxopts |
+| Error handling | tl::expected |
+| Logging | spdlog |
+| Config | toml++ |
+| CLI | cxxopts |
 | GUI API | Windows UI Automation |
 
 ---
 
-## 许可证
+## License
 
-本项目采用 [MIT License](LICENSE) 开源协议。
+This project is released under the [MIT License](LICENSE).
 
-- **商业使用**：允许
-- **修改与分发**：允许，需保留版权声明与许可证全文
-- **专利与责任**：无担保，详见 [LICENSE](LICENSE) 文件
+- **Commercial use**: Allowed
+- **Modification and distribution**: Allowed, with copyright notice and full license text retained
+- **Patent and liability**: Provided without warranty; see [LICENSE](LICENSE) for details
 
 Copyright (c) 2025 [carlos-Ng](https://github.com/carlos-Ng)
