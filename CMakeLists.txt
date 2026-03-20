@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 # ─── 项目声明 ─────────────────────────────────────────────────────────────────
 # Windows 平台无 ObjC++，只需 CXX。
 # 未来合并 macOS 代码时，在此添加 if(APPLE) 分支并补充 OBJCXX 语言。
-project(ClawShell VERSION 0.1.0 LANGUAGES CXX)
+project(ClawShell VERSION 0.1.1 LANGUAGES CXX)
 
 # ─── Global C++ standard ──────────────────────────────────────────────────────
 
@@ -20,6 +20,9 @@ if(WIN32)
     add_compile_definitions(_WIN32_WINNT=0x0A00)
     # 强制 MSVC 以 UTF-8 解析源文件（解决含中文注释的头文件在 GBK 代码页下的解析错误）
     add_compile_options(/utf-8)
+    # 发行包开箱即用：静态链接 MSVC Runtime，避免用户机器缺失 VC++ Redistributable。
+    # Debug 配置对应 /MTd，Release/RelWithDebInfo/MinSizeRel 对应 /MT。
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
 # ─── Third-party: header-only interface targets ───────────────────────────────
@@ -256,12 +259,14 @@ if(WIN32)
     )
 
     add_custom_target(release
+        COMMAND powershell -NoProfile -NonInteractive -Command
+            "if ('$<CONFIG>' -ne 'Release') { Write-Host 'ERROR: release target requires --config Release.'; exit 1 }"
         COMMAND ${CMAKE_COMMAND} -E echo "Packaging ${CLAWSHELL_WINDOWS_ZIP} ..."
         COMMAND powershell -NoProfile -NonInteractive -Command
             "Compress-Archive -Path '${CLAWSHELL_DIST_DIR}/*' -DestinationPath '${CLAWSHELL_WINDOWS_ZIP}' -Force"
         COMMAND ${CMAKE_COMMAND} -E echo "Done: ${CLAWSHELL_WINDOWS_ZIP}"
         DEPENDS dist
-        COMMENT "Creating clawshell-windows-${PROJECT_VERSION}.zip from dist/"
+        COMMENT "Creating clawshell-windows-${PROJECT_VERSION}.zip from dist/ (Release only)"
         VERBATIM
     )
 endif()

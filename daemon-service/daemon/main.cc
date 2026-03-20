@@ -16,7 +16,7 @@
 
 // CLAWSHELL_VERSION 是 daemon 的版本字符串，由 CMake 注入或回退到默认值。
 #ifndef CLAWSHELL_VERSION
-#define CLAWSHELL_VERSION "0.1.0"
+#define CLAWSHELL_VERSION "0.1.1"
 #endif
 
 // blockTerminationSignals Windows 下无信号掩码概念，空实现占位。

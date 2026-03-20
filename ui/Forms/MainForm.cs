@@ -111,7 +111,7 @@ public class MainForm : Form
 			Dock      = DockStyle.Fill,
 			Font      = new Font("微软雅黑", 8f),
 			ForeColor = Color.FromArgb(160, 160, 160),
-			Text      = "v0.1.0",
+			Text      = "v0.1.1",
 			TextAlign = ContentAlignment.MiddleRight,
 			AutoSize  = false,
 		};

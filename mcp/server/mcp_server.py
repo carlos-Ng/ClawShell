@@ -35,7 +35,7 @@ MCP_PROTOCOL_VERSION = "2024-11-05"
 # 服务端信息
 SERVER_INFO = {
     "name": "clawshell-gui",
-    "version": "0.1.0",
+    "version": "0.1.1",
 }
 
 
